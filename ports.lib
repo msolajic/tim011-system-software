@@ -1,0 +1,97 @@
+;
+;
+; HD64180 Port Address Library
+; Version 1.0, January 1985
+; By Microfuture
+;
+; Added FDC and CENTRONICS equates at the end of this file.  April, 85	JWW
+;
+;Asynchronous Serial Communication Interface (ASCI)
+;
+CNTLA0	EQU	0		; ASCI Control Register A Channel 0
+CNTLA1	EQU	1		; ASCI Control Register A Channel 1
+CNTLB0	EQU	2		; ASCI Control Register B Channel 0
+CNTLB1	EQU	3		; ASCI Control Register B Channel 1
+STAT0	EQU	4		; ASCI Status Register Channel 0
+STAT1	EQU	5		; ASCI Status Register Channel 1
+TDR0	EQU	6		; ASCI Transmit Data Register Channel 0
+TDR1	EQU	7		; ASCI Transmit Data Register Channel 1
+RDR0	EQU	8		; ASCI Receive Data Register Channel 0
+RDR1	EQU	9		; ASCI Receive Data Register Channel 1
+;
+;
+;Clocked Serial Input/Output Port (CSI/O)
+;
+CNTR	EQU	0AH		; CSI/O Control Register
+TRDR	EQU	0BH		; CSI/O Transmit/Receive Data Register
+;
+;
+;Programmable Reload Timer (PRT)
+;
+TMDR0L	EQU	0CH		; PRT Timer Data Register Channel 0 Low
+TMDR0H	EQU	0DH		; PRT Timer Data Register Channel 0 High
+RLDR0L	EQU	0EH		; PRT Timer Reload Register Channel 0 Low
+RLDR0H	EQU	0FH		; PRT Timer Reload Register Channel 0 High
+TCR	EQU	10H		; PRT Timer Control Register
+TMDR1L	EQU	14H		; PRT Timer Data Register Channel 1 Low
+TMDR1H	EQU	15H		; PRT Timer Data Register Channel 1 High
+RLDR1L	EQU	16H		; PRT Timer Reload Register Channel 1 Low
+RLDR1H	EQU	17H		; PRT Timer Reload Register Channel 1 High
+;
+;
+;DMA Controller (DMAC)
+;
+SAR0L	EQU	20H		; DMAC Source Address Register Channel 0 Low
+SAR0H	EQU	21H		; DMAC Source Address Register Channel 0 High
+SAR0B	EQU	22H		; DMAC Source Address Register Channel 0 Bank
+DAR0L	EQU	23H		; DMAC Destination Address Register Channel 0 Low
+DAR0H	EQU	24H		; DMAC Destination Address Register Channel 0 High
+DAR0B	EQU	25H		; DMAC Destination Address Register Channel 0 Bank
+BCR0L	EQU	26H		; DMAC Byte Count Register Channel 0 Low
+BCR0H	EQU	27H		; DMAC Byte Count Register Channel 0 High
+MAR1L	EQU	28H		; DMAC Memory Address Register Channel 1 Low
+MAR1H	EQU	29H		; DMAC Memory Address Register Channel 1 High
+MAR1B	EQU	2AH		; DMAC Memory Address Register Channel 1 Bank
+IAR1L	EQU	2BH		; DMAC I/O Address Register Channel 1 Low
+IAR1H	EQU	2CH		; DMAC I/O Address Register Channel 1 High
+BCR1L	EQU	2EH		; DMAC Byte Count Register Channel 1 Low
+BCR1H	EQU	2FH		; DMAC Byte Count Register Channel 1 High
+DSTAT	EQU	30H		; DMAC Status Register
+DMODE	EQU	31H		; DMAC Mode Register
+DCNTL	EQU	32H		; DMAC Control Register
+;
+;
+;Interrupt Control Registers
+;
+IL	EQU	33H		; INTERRUPT Vector Low Register
+ITC	EQU	34H		; INT/TRAP Control Register
+;
+;
+;Refresh Control Register
+;
+RCR	EQU	36H		; REFRESH Control Register
+;
+;
+;Memory Management Unit (MMU)
+;
+CBR	EQU	38H		; MMU Common Base Register
+BBR	EQU	39H		; MMU Bank Base Register
+CBAR	EQU	3AH		; MMU Common/Bank Area Register
+;
+;
+;I/O Control Register
+;
+ICR	EQU	3FH		; I/O Control Register
+;
+; NEC upd765 Addresses
+;
+FDCSTS	EQU	80H
+FDCDT	EQU	81H
+;
+; Parallel Printer Latch
+;
+CENTDC	EQU	0C0H
+CENTDS	EQU	0C1H
+;
+; End of PORTS.LIB
+

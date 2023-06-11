@@ -1,0 +1,77 @@
+
+; I/O Library for the NCR 5380 SCSI controller
+;  Define the various registers
+
+
+; Read registers
+
+ncsd	equ	ncr		; Current SCSI data
+nicr	equ	ncr+1		; Initiator command register
+nmod	equ	ncr+2		; Mode register
+ntcr	equ	ncr+3		; Target command register
+ncbs	equ	ncr+4		; Current bus status
+nbas	equ	ncr+5		; Bus and status register
+nidr	equ	ncr+6		; Input data register
+nrpi	equ	ncr+7		; Reset parity/interrupt
+
+; Write registers
+
+nodr	equ	ncr		; Output data register
+nsen	equ	ncr+4		; Select enable register
+nsds	equ	ncr+5		; Start DMA send register
+nsdt	equ	ncr+6		; Start DMA target receive register
+nsdi	equ	ncr+7		; Start DMA initiator receive register
+
+; Initiator command register bit assignments (nicr)
+
+nars	equ	80h		; Assert RST
+naip	equ	40h		; Arbitration in progress
+nlar	equ	20h		; Lost arbitration
+naac	equ	10h		; Assert ACK
+nabs	equ	8		; Assert BSY
+nase	equ	4		; Assert SEL
+naat	equ	2		; Assert ATN
+nadb	equ	1		; Assert data bus
+
+; Mode register bit assignments (nmod)
+
+nbmd	equ	80h		; Block mode DMA
+ntam	equ	40h		; Target mode
+nepc	equ	20h		; Enable parity check
+nepi	equ	10h		; Enable parity interrupt
+neei	equ	8		; Enable EOP interrupt
+nmbs	equ	4		; Monitor BSY
+ndmd	equ	2		; DMA mode
+narb	equ	1		; Arbitration
+
+; Target command register bit assignments (ntcr)
+
+narq	equ	8		; Assert REQ
+nams	equ	4		; Assert MSG
+nacd	equ	2		; Assert C/D
+naio	equ	1		; Assert I/O
+
+; Current bus status bit assignments (ncbs)
+
+nrst	equ	80h		; Reset
+nbsy	equ	40h		; Busy
+nreq	equ	20h		; Request
+nmsg	equ	10h		; Message
+nc_d	equ	8		; Command/Data
+ni_o	equ	4		; I/O
+nsel	equ	2		; Select
+ndpb	equ	1		; Data bus parity
+
+; Bus and status bit assignments (nbas)
+
+nedm	equ	80h		; End DMA
+ndmr	equ	40h		; DMA request
+nper	equ	20h		; Parity error
+ninr	equ	10h		; Interrupt request
+nphm	equ	8		; Phase match
+nbse	equ	4		; Busy error
+natn	equ	2		; ATN
+nack	equ	1		; ACK
+
+; End of NCRIO.LIB
+

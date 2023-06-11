@@ -1,0 +1,2726 @@
+
+; Program:  SB180 BIOS
+; Author:  Joe Wright
+; Date:  4 November 1986
+; Version:  3.2
+;
+; Copyright (c) 1986
+;   by Micromint, Inc.
+;      All Rights Reserved
+
+vers	equ	32		; Modified dpbmdsk for different format.
+				; Added new BIOS call for proper memory
+				;   allocation.
+				; Checks for the presence of an SCSI
+				;   interface.
+				; Resets high bit during buffered console
+				;   input.
+				;                    4 November 86  kwd
+
+;vers	equ	31		; Fixed incorrect track offset in dpbhd3.
+				; Added jump to true warm boot vector
+				;   in context change routine.
+				;                      21 May 86  kwd
+
+;vers	equ	30		; Fixed 8" Drive Not Ready bug
+				; All direct character I/O redirected
+				;   through IOP hooks.
+				; Includes 9266 Reset Adapter code with
+				;   improved error recovery.
+				; Removed wheel byte address storage into
+				;   ZRDOS.
+				; Reduced type-ahead buffer to 32 bytes.
+				;                       5 March 86  kwd
+
+;vers	equ	27		; Hard disk release version.  15 Jan 86
+
+; This version supports nine formats including..
+;
+;  5.25 inch formats:
+;
+;	Native 1
+;	Native 2
+;	Hitachi
+;	Kaypro II
+;	Osborne 1
+;	Ampro SSDD
+;
+;  8 inch formats:
+;
+;	IBM Standard SSSD
+;	CCS/Compupro SSDD
+;	CCS/Compupro DSDD
+;
+; as well as a 192k Ram disk as drive M.
+
+no	equ	0
+yes	equ	not no
+
+typahd	equ	yes		; Use type-ahead buffer
+
+	 if	typahd
+buflen	equ	32		; Type-ahead buffer length
+	 endif
+
+; This file is assembled with ZAS
+
+	.hd64			; Use HD64180 opcodes
+ncr	equ	0f8h		; Base of NCR 5380
+	maclib	ncrio		; NCR 5380 equates
+	maclib	ports		; CPU port definitions
+	maclib	z3base		; ZCPR3 equates
+	maclib	sysenv		; ZCPR3 environment descriptor
+
+bios:				; Beginning of this program (rel 0)
+
+zcpr	equ	bios-1600h	; Re-locating CCP entry
+bdos	equ	zcpr+806h	; Base of bdos
+cdisk	equ	0004h		; Current disk number 0=A,...,15=P
+iobyte	equ	0003h		; Intel i/o byte
+
+nsects	equ	16		; Warm start sector count (only the CCP)
+
+cr	equ	13		; Carriage return
+lf	equ	10		; Line feed
+rdrf	equ	10000000b	; Read data register full
+tdre	equ	00000010b	; Transmit data register empty
+dcd	equ	00000100b	; Data Carrier Detect* (Port 0)
+
+wrall	equ	0		; For reference, not used
+wrdir	equ	1
+wrual	equ	2
+
+reseton	equ	82h		; start FDC reset
+resetof	equ	84h		; stop FDC reset
+
+rdcm	equ	6		; Fdc read sector command
+wrcm	equ	5		; Fdc write sector command
+rdidcm	equ	10		; Fdc read id command
+mfm	equ	64		; MFM command bit
+rescm	equ	7		; Restore command
+seekcm	equ	15		; Seek command
+siscm	equ	8		; Sense interrupt command
+fdcdma	equ	160		; Dack from dma controller to fdc
+
+rqm	equ	7		; Request from master
+dio	equ	6		; Direction bit
+ndm	equ	5		; Non dma mode
+cb	equ	4		; Controller busy bit
+
+retries	equ	5		; Number of disk re-tries
+				;  (must be at least 2)
+
+stpr2	equ	0ffh		; 2 millisecond step
+stpr4	equ	0efh		; 4 millisecond step
+stpr6	equ	0dfh		; 6 millisecond step
+stpr10	equ	0bfh		; 10 millisecond step
+stpr12	equ	0afh		; 12 millisecond step
+stpr16	equ	08fh		; 16 millisecond step
+
+bank0	equ	40h		; System bank
+
+bank1	equ	50h		; Aux banks (48k each)
+bank2	equ	5ch
+bank3	equ	68h
+bank4	equ	74h
+
+swap	equ	4		; Drive context swap value
+
+; Jump vector for individual subroutines
+
+	jp	boot		; Cold start
+wboote:	jp	wboot		; Warm start
+	jp	iop+12		; Console status
+	jp	iop+15		; Console character in
+	jp	iop+18		; Console character out
+	jp	iop+21		; List character out
+	jp	iop+24		; Punch character out
+	jp	iop+27		; Reader character out
+	jp	home		; Move head to home position
+	jp	seldsk		; Select disk
+	jp	settrk		; Set track number
+	jp	setsec		; Set sector number
+	jp	setdma		; Set dma address
+	jp	read		; Read disk
+	jp	write		; Write disk
+	jp	iop+30		; Return list status
+	jp	sectran		; Sector translate
+	jp	ioinit		; Initialize I/O system
+	jp	time		; Return pointer to 'Clock' buffer
+	jp	swapem		; Swap drive contexts (A-D <=> E-H)
+	jp	allocmem	; Allocate memory to an application
+;
+endjmp:	ds	64-[endjmp-bios]
+;
+; I/O parameter table is re-configurable at run time.  After any changes
+;  to the table, a call to ioinit (bios + 33h) will make them effective.
+;
+iotable:
+asci:	db	01100100b	; Cntla0 re, te, rts*, 8 bits, 1 stop
+	db	01110100b	; Cntla1 re, te, intern clk, 8 bits, 1 stop
+	db	00001011b	; Cntlb0 /10, /64, /8 (1200 baud)
+	db	00000010b	; Cntlb1 /10, /16, /4 (9600 baud)
+	db	00000000b	; Stat0  disable interrupts
+	 if	typahd
+	db	00001100b	; Stat1  enable cts1*, enable interrupt
+	 else
+	db	00000100b	; Stat1  enable cts1*, disable interrupt
+	 endif
+iobyt:	db	10000000b	; LPT: is the default list device
+waits:	db	01011100b	; Dcntl (1 wait, edge triggered)
+reload0:dw	30720		; 30000 for 6.0 Mhz, 30720 for 6.144 Mhz.
+motime:	db	10		; Seconds
+spinup:	dw	12		; Tenths of seconds
+fdcspec:db	stpr10		; Ten ms step, 480 ms HUT
+	db	00001100b	; HLT 24 ms, DMA mode
+ndsks:	db	2		; Floppies
+autocmd:db	8,'START   ',0	; Auto start command
+config:	db	yes		; Show already configured
+swapped:db	0		; 0=no, 4=yes
+;
+; Default to Xebec Owl parameters, 4 partitions
+;
+nhdsks:	db	4+swap		; Hard disk partitions
+hdtyp:	db	0		; Controller type (0=owl, 1=acb4000, 2=1410a)
+hdstpr:	db	2		; Step Rate (0=3ms, 1=28us, 2=12us)
+cyls:	dw	306		; Cylinders
+heads:	db	4
+
+;
+; Disk parameter blocks start here
+;
+dpbhd0:
+	dw	64		; Sectors per track
+	db	5		; Block shift factor
+	db	31		; Block mask
+	db	1		; Extent mask
+	dw	647		; Disk size-1
+	dw	1023		; Directory max
+	dw	255		; Alloc 0
+	dw	0		; Check size
+	dw	2		; Track offset
+
+dpbhd1:
+	dw	64		; Sectors per track
+	db	5		; Block shift factor
+	db	31		; Block mask
+	db	1		; Extent mask
+	dw	647		; Disk size-1
+	dw	1023		; Directory max
+	dw	255		; Alloc 0
+	dw	0		; Check size
+	dw	326		; Track offset
+
+dpbhd2:
+	dw	64		; Sectors per track
+	db	5		; Block shift factor
+	db	31		; Block mask
+	db	1		; Extent mask
+	dw	647		; Disk size-1
+	dw	1023		; Directory max
+	dw	255		; Alloc 0
+	dw	0		; Check size
+	dw	650		; Track offset
+
+dpbhd3:
+	dw	64		; Sectors per track
+	db	5		; Block shift factor
+	db	31		; Block mask
+	db	1		; Extent mask
+	dw	647		; Disk size-1
+	dw	1023		; Directory max
+	dw	255		; Alloc 0
+	dw	0		; Check size
+	dw	974		; Track offset
+
+;
+; Native 1 format
+;
+dpbnat1:
+	dw	40		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	1		; Extent mask
+	dw	194		; Disk size-1
+	dw	127		; Directory max
+	dw	192		; Alloc 0
+	dw	32		; Check size
+	dw	2		; Track offset
+;
+; Native 2 format
+;
+dpbnat2:
+	dw	40		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	0		; Extent mask
+	dw	394		; Disk size-1
+	dw	255		; Directory max
+	dw	240		; Alloc 0
+	dw	64		; Check size
+	dw	2		; Track offset
+;
+; Hitachi QC-10 format
+;
+dpbhit:
+	dw	32		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	1		; Extent mask
+	dw	143		; Disk size-1
+	dw	63		; Directory max
+	dw	128		; Alloc 0
+	dw	16		; Check size
+	dw	8		; Track offset
+;
+; Kaypro 2 format
+;
+dpbkay:
+	dw	40		; Sectors per track
+	db	3		; Block shift factor
+	db	7		; Block mask
+	db	0		; Extent mask
+	dw	194		; Disk size-1
+	dw	63		; Directory max
+	dw	240		; Alloc 0
+	dw	16		; Check size
+	dw	1		; Track offset
+;
+; Osborne 1 format
+;
+dpbosb:
+	dw	40		; Sectors per track
+	db	3		; Block shift factor
+	db	7		; Block mask
+	db	0		; Extent mask
+	dw	184		; Disk size-1
+	dw	63		; Directory max
+	dw	192		; Alloc 0
+	dw	16		; Check size
+	dw	3		; Track offset
+;
+; Ampro format
+;
+dpbamp:
+	dw	40		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	1		; Extent mask
+	dw	94		; Disk size-1
+	dw	63		; Directory max
+	dw	128		; Alloc 0
+	dw	16		; Check size
+	dw	2		; Track offset
+;
+; Ram disk format
+;
+dpbmdsk:
+	dw	32		; Sectors per track
+	db	3		; Block shift factor
+	db	7		; Block mask
+	db	0		; Extent mask
+mdsksiz:dw	191		; Disk size-1
+	dw	63		; Directory max
+	dw	192		; Alloc 0
+	dw	0		; Check size
+	dw	0		; Track offset
+mdskbnk:db	50h
+;
+; IBM 8 inch single density disk format
+;
+dpbibm:
+	dw	26		; Sectors per track
+	db	3		; Block shift factor
+	db	7		; Block mask
+	db	0		; Extent mask
+	dw	242		; Disk size-1
+	dw	63		; Directory max
+	dw	192		; Alloc 0
+	dw	16		; Check size
+	dw	2		; Track offset
+;
+; CCS/Compupro single sided double density
+;
+dpbd3:
+	dw	64		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	0		; Extent mask
+	dw	299		; Disk size-1
+	dw	127		; Directory max
+	dw	192		; Alloc 0
+	dw	32		; Check size
+	dw	2		; Track offset
+;
+; CCS/Compupro double sided double density
+;
+dpbd2a:
+	dw	60		; Sectors per track
+	db	4		; Block shift factor
+	db	15		; Block mask
+	db	0		; Extent mask
+	dw	561		; Disk size-1
+	dw	255		; Directory max
+	dw	240		; Alloc 0
+	dw	64		; Check size
+	dw	4		; Track offset
+;
+;
+dpbase:
+;
+; Disk parameter header for disk 00
+;
+	dw	0,0,0,0,dirbf,dpbhit,chk00,all00
+;
+; Disk parameter header for disk 01
+;
+	dw	0,0,0,0,dirbf,dpbhit,chk01,all01
+;
+; Disk parameter header for disk 02
+;
+	dw	0,0,0,0,dirbf,dpbhit,chk02,all02
+;
+; Disk parameter header for disk 03
+;
+	dw	0,0,0,0,dirbf,dpbhit,chk03,all03
+;
+; Disk parameter header for disk 04
+;
+	dw	0,0,0,0,dirbf,dpbhd0,chk04,all04
+;
+; Disk parameter header for disk 05
+;
+	dw	0,0,0,0,dirbf,dpbhd1,chk05,all05
+;
+; Disk parameter header for disk 06
+;
+	dw	0,0,0,0,dirbf,dpbhd2,chk06,all06
+;
+; Disk parameter header for disk 07
+;
+	dw	0,0,0,0,dirbf,dpbhd3,chk07,all07
+;
+; Disk parameter header for Ram disk
+;
+dphmdsk:
+	dw	0,0,0,0,dirbf,dpbmdsk,chk12,all12
+;
+;
+;	end of fixed tables
+;
+
+;
+; This is the auxillary jump table so that IOP's can find the
+;  various routines.  After cold boot, the address of this table
+;  can be found at BIOS+1, the cold boot jump target.
+;
+iopret:
+	jp	const
+	jp	conin
+	jp	conout
+	jp	list
+	jp	punch
+	jp	reader
+	jp	listst
+;
+; Force 32-byte boundary for interrupt vector table
+;
+intsp:	ds	32-[intsp-bios and 31]
+
+inttbl:
+	dw	intlpt		; Parallel printer
+	dw	intfdd		; Floppy disk controller
+	dw	inttim0		; Timer 0
+	dw	inttim1		; Timer 1
+	dw	intdma0		; DMA 0 (Ram disk)
+	dw	intdma1		; DMA 1
+	dw	intcsio		; Clocked serial IO
+	dw	intasci0	; ASCI 0
+	dw	intasci1	; ASCI 1
+;
+; Following interrupt routines not supported
+;
+inttim1:
+intdma0:
+intdma1:
+intcsio:
+intasci0:
+	 if	not typahd
+intasci1:
+	 endif
+;
+interr:
+	call	print
+	db	cr,lf,'Interrupt Error',0
+	jp	wboot
+
+; Time simply points HL to the ten-byte 'Clock' string.
+;  User should disable interrupts, move the bytes of interest
+;  to his own buffer, then enable interrupts again (quickly).
+; The 'Clock' is set in similar fashion, moving bytes into the string.
+
+time:
+	ld	hl,rtc		; Real time clock
+	ret
+;
+; I/O initialization subroutine
+;  This routine takes the values found in the iotable and places
+;  them in their appropriate registers.  The iotable is always
+;  located at bios+40h and its structure is fixed.  See note at iotable:
+;
+ioinit:
+	ld	a,(config)
+	or	a
+	ret	z
+	ld	hl,iotable
+	ld	bc,6*256
+	otimr
+	ld	a,(iobyt)
+	ld	(iobyte),a
+	ld	a,83h
+	out0	(rcr),a
+	ld	a,(waits)
+	out0	(dcntl),a
+;
+; Initialize PRT0 for real-time clock
+;  Set the reload register to system clock/200 (100 ms interval)
+;
+	ld	hl,rtc
+	ld	de,rtc+1
+	ld	bc,9
+	ld	(hl),0
+	ldir
+	ld	hl,(reload0)
+	out0	(rldr0l),l
+	out0	(rldr0h),h
+	ld	a,00010001b
+	out0	(tcr),a		; Enable interrupt and down-counting
+	ld	a,255		; True value
+	ld	(prtrdy),a	; Flag printer ready
+	out	(centdc),a	; Clear any pending interrupt
+;
+; Specify the disks
+;
+	ld	hl,(fdcspec)
+specfdc:
+	call	cbusy		; Wait for rqm and dio*
+	ld	a,3		; Specify command
+	out	(fdcdt),a
+	call	cbusy
+	ld	a,l
+	out	(fdcdt),a
+	call	cbusy
+	ld	a,h
+	out	(fdcdt),a
+	ret
+;
+; Drive context switch.
+;  Enter with C=0 for floppies as A-D, hard disk E-H
+;  Enter with C<>0 for hard disk A-D and floppies E-H
+;
+swapem:
+	ld	a,(hdpres)	; check if hard disk present
+	or	a
+	jp	z,wboote	; if not, don't swap
+	ld	a,c
+	or	a
+	jr	z,swapex
+	ld	a,swap
+swapex:
+	ld	(swapped),a	; do a warmboot
+	jp	wboote
+
+;
+; Warm boot loads a fresh copy of ZCPR3 from the system tracks
+;
+wboot:
+	ld	sp,80h		; Use space below default buffer
+	ld	c,0		; Select disk 0
+	ld	e,c		; Declare new mount
+	call	seldsk
+	call	home		; Go to track 00
+	ld	bc,nsects*256+1	; B sectors remaining, C first sector
+	ld	de,0		; DE beginning track
+;
+; Note that we begin by reading track 0, sector 1 since sector 0
+;  contains the cold start loader, which is skipped in a warm start
+;
+	ld	hl,zcpr		; Base of cp/m (initial load point)
+load1:				; Load one more sector
+	push	de		; Save current track
+	push	bc		; Save sectors remaining and next sector
+	push	hl		; Save dma address
+	call	setsec		; Set sector address from register c
+	pop	bc		; Recall dma address to b,c
+	push	bc		; Replace on stack for later recall
+	call	setdma		; Set dma address from b,c
+;
+; Drive set to 0, track set, sector set, dma address set
+;
+	call	read
+	or	a		; Any errors?
+	jr	nz,wboot	; Retry the entire boot if an error occurs
+;
+; No error, move to next sector
+;
+	pop	hl		; Recall dma address
+	ld	de,128		; Dma=dma+128
+	add	hl,de		; New dma address is in h,l
+	pop	bc		; Recall nsects and current sector
+	pop	de		; Recall current track
+	dec	b		; Sectors=sectors-1
+	jr	z,gozsys	; Go to Z-System if all have been loaded
+;
+; More sectors remain to load, check for track change
+;
+	inc	c		; Increment sector count
+	ld	a,(cpmspt)	; Max sector +1
+	cp	c		; Have we reached the end?
+	jr	nz,load1	; If not
+;
+; End of current track, go to next track
+;
+	inc	de		; Track=track+1
+	ld	c,0		; First sector on next track
+;
+; save register state, and change tracks
+;
+	push	de
+	push	bc
+	push	hl
+	ld	b,d
+	ld	c,e		; BC = next track
+	call	settrk		; Track address set from register c
+	pop	hl
+	pop	bc
+	pop	de
+	jr	load1		; For another sector
+;
+; End of load operation, set parameters and go to Z-System
+;
+gozsys:
+	ld	a,0c3h		; C3 is a jmp instruction
+	ld	(0),a		; For jmp to wboot
+	ld	hl,wboote	; Wboot entry point
+	ld	(1),hl		; Set address field for jmp at 0
+	ld	(5),a		; For jmp to bdos
+	ld	hl,bdos		; Bdos entry point
+	ld	(6),hl		; Address field of jump at 5 to bdos
+	ld	bc,80h		; Default dma address is 80h
+	call	setdma
+	ld	a,(cdisk)	; Get current disk number
+	ld	c,a		; Send to the ccp
+	ei			; Enable the interrupt system
+	jp	zcpr		; Go to Z-System for further processing
+;
+; Console input status, return 0ffh if character ready, 00h if not
+;
+const:
+	 if	typahd
+	ld	a,(typbuf)	; Character count in type-ahead buffer
+	or	a
+	 else
+	in0	a,(stat1)	; Console status register
+	and	rdrf		; Receive data register full
+	 endif
+	ret	z		; No character available
+	or	255		; Yes, character ready
+	ret
+;
+; Console character into register a
+;
+conin:
+	call	const
+	jr	z,conin		; Wait for character
+	 if	typahd
+	jp	getbuf		; Get character from buffer
+	 else
+	in0	a,(rdr1)	; Console receive data register
+	and	7fh		; Mask parity bit off
+	ret
+	 endif
+;
+; Console character input to register A using IOP hook
+;
+ciniop:
+	push	bc		; Save registers
+	push	de
+	push	hl
+	call	bios+9		; Get character
+	pop	hl		; Restore registers
+	pop	de
+	pop	bc
+	ret
+;
+; Console character output from register c
+;
+conout:
+	in0	a,(stat1)	; Console status register
+	and	tdre		; Trx data reg empty
+	jr	z,conout	; Wait for empty
+	out0	(tdr1),c	; Output the C register
+	ret
+;
+; Console character output from register C using IOP hook
+;
+coutiop:
+	push	af		; Save registers
+	push	bc
+	push	de
+	push	hl
+	call	bios+12		; Output character
+	pop	hl		; Restore registers
+	pop	de
+	pop	bc
+	pop	af
+	ret
+;
+; The Intel IOBYTE is implemented allowing these conventions:
+;  The default list device is LPT: (10000000b).  Therefore the LIST
+;  routine will normally output to the Centronics port.  If the IOBYTE
+;  has been set to LST: (00000000b), data will be sent to TDR0, the
+;  serial port.  Note that this port is wired as DTE (data terminal
+;  equipment) and it will be necessary to configure your printer or
+;  printer cable accordingly.
+;
+; List status returns the status of the Centronics port.
+;  0 says printer is busy, 255 says printer is ready
+;
+listst:
+	ld	a,(iobyte)
+	and	80h
+	cp	80h
+	jr	z,parst		; Return parallel port status
+;
+; Test status of serial port 0
+;
+	call	punst		; PUNCH is the serial port 0
+	and	tdre		; Test serial port ready
+	sub	tdre		; Result is 0 if port is ready
+	dec	a		; Goes to 255 from 0
+	ret	m		; Ready
+	xor	a		; Not ready
+	ret
+;
+; Status of parallel port
+;
+parst:
+	ld	a,(prtrdy)	; Printer ready flag
+	or	a		; Set flags
+	ret
+;
+; List outputs a character to the Centronics port.
+;  After the printer acknowledges the character, INT1* is generated
+;  and the intcen routine will flag the printer ready again.
+;
+list:
+	ld	a,(iobyte)
+	and	80h
+	cp	80h
+	jr	nz,punout	; Punch is serial port 0
+lpt:
+	call	parst		; Wait for printer ready
+	jr	z,lpt
+	xor	a		; Get a zero
+	ld	(prtrdy),a	; Flag printer busy
+	ld	a,c		; Character to register a
+	out	(centdc),a	; Set up the data latches
+	out	(centds),a	; Set STB* to printer
+	out	(centdc),a	; Clear STB* to printer
+	ret
+;
+; Punch routine is used to output a byte from C to the Modem port
+;  Enter with carry flag set to check status
+;
+punch:
+	jr	nc,punout	; Send a byte
+punst:
+	in0	a,(stat0)	; Check status
+	or	a		; Reset carry
+	ret			; User determines correct status
+punout:
+	call	punst		; Get status
+	and	tdre		; Transmit data register empty
+	jr	z,punout	; Wait for it to empty
+	out0	(tdr0),c	; Send the character
+	ret
+;
+; Reader routine is used to read a byte from the Modem port
+;  Enter with carry flag set to check status
+;
+reader:
+	jr	nc,readin	; Get a byte
+readst:
+	in0	a,(stat0)	; Get the status word
+	or	a		; Reset carry
+	ret			; User determines status
+readin:
+	call	readst		; Get status
+	and	rdrf		; Check data available
+	jr	z,readin	; Wait for it
+	in0	a,(rdr0)	; Get a byte from the modem
+	ret
+;
+; Allocate memory to an application program.  Programs that wish to
+; use some of the extra memory available to the HD64180 need a way
+; to steal it from the RAM disk.  Programs can call this routine
+; and request up to 128k of RAM and the BIOS will take care of
+; reducing the size of the RAM disk.  If there isn't enough room
+; left on the RAM disk, the routine returns an error.  The RAM
+; allocated by the routine starts at 7FFFFH and goes down by the
+; amount requested (e.g. if 48k is requested, the application
+; program is given 74000H-7FFFFH).
+;
+; Enter the routine with the number of K bytes of memory requested in
+; C.  If C=0, the RAM disk is restored to use all memory.  On exit,
+; the A register contains 0 and the zero flag is set if there was no
+; error.  If there was an error (the requested amount of memory isn't
+; available), the A register contains the actual amount that is
+; available and the zero flag is reset.
+;
+allocmem:
+	ld	(locstk),sp	; Save program's stack
+	ld	sp,locstk	; Use our own
+	push	hl		; Save registers
+	push	de
+	ld	a,c		; Check for restore operation
+	or	a
+	jr	nz,acont	; No, continue
+	ld	hl,191		; Yes, full size
+	ld	(mdsksiz),hl
+	xor	a		; No error
+	jr	aret
+acont:
+	push	bc
+;
+	in0	d,(cbar)	; Save MMU status
+	push	de
+	in0	d,(cbr)
+	in0	e,(bbr)
+	push	de
+;
+	ld	a,0b0h		; Change MMU to look at M: directory
+	out0	(cbar),a
+	ld	a,40h
+	out0	(cbr),a
+	ld	a,(mdskbnk)
+	out0	(bbr),a
+;
+	ld	hl,0000h	; Point to address 0000
+	ld	de,10h		; Use 16 byte offsets
+	ld	c,1		; Current largest block used
+atop:
+	ld	a,(hl)		; Get first byte of directory entry
+	cp	0e5h		; Is there a file?
+	jr	z,nofile	; No
+	add	hl,de		; Yes, point to blocks used
+	ld	b,10h		; Check all 16 entries
+aloop:
+	ld	a,(hl)		; Get next block used
+	cp	c		; Compare with current largest
+	jp	c,smaller	; Smaller?
+	ld	c,a		; No, new largest
+smaller:
+	inc	hl		; Point to next block used
+	djnz	aloop		; Do all 16
+	jr	atop		; Do next file
+;
+nofile:
+	add	hl,de		; Point to blocks used
+	ld	a,(hl)		; Get first block
+	cp	0e5h		; Is this the end of the directory?
+	jr	z,adone		; Yes, done
+	add	hl,de		; No, just deleted file.  Point to next file
+	jr	atop		; Do next file
+;
+adone:
+	pop	de		; Restore MMU
+	out0	(bbr),e
+	out0	(cbr),d
+	pop	de
+	out0	(cbar),d
+;
+; Largest block used is now in C
+;
+	ld	a,0bfh		; Largest possible block
+	sub	c		; Calculate #K left
+	pop	bc		; Get requested amount
+	cp	c		; Enough room?
+	jp	c,noroom	; No
+	ld	a,191		; Yes, reduce RAM disk
+	sub	c
+	ld	l,a
+	ld	h,0
+	ld	(mdsksiz),hl
+	xor	a		; No error
+	jr	aret
+noroom:
+	or	a		; Flag error
+aret:
+	pop	de		; Restore registers
+	pop	hl
+	ld	sp,(locstk)	; Restore program's stack
+	ret
+;
+; Move to the track 00 position of current drive
+; translate this call into a settrk call with parameter 00
+;
+home:
+	ld	bc,0		; Select track 0
+	call	settrk
+	ld	a,(hstwrt)	; Write pending?
+	or	a
+	ret	nz		; Write is pending, return.
+	ld	(hstact),a	; Clear host active flag
+	ret			; We will move to 00 on first read/write
+;
+; Select disk given by register C
+;
+seldsk:
+	ld	a,'M'-'A'	; Drive M?
+	sub	c		; Set flags
+	ld	hl,dphmdsk	; Ram disk header
+	ld	a,255
+	jr	z,seld1		; Ram disk is selected
+	inc	a		; Otherwise, not.
+seld1:
+	ld	(mdskact),a	; Set mdsk flag
+	or	a
+	ret	nz		; Ram disk selected, return to caller
+;
+	ld	a,c
+	cp	8		; If not M, only 0 through 7 are supported
+	jr	nc,selerr
+	ld	a,(swapped)
+	add	a,c
+	and	7
+	ld	c,a
+;
+	ld	hl,ndsks	; Point to Max disks (1,2,3 or 4)
+	cp	(hl)		; Must be between 0 and 3 for floppy
+	jr	c,selok
+	cp	4
+	jr	c,selerr
+	ld	h,a		; Save A reg.
+	ld	a,(hdpres)	; Check if hard disk is present
+	or	a
+	ld	a,h		; Restore A reg.
+	jr	z,selerr
+	ld	hl,nhdsks	; Max hard partitions (5,6,7 or 8)
+	cp	(hl)		; 4 through 7 for hard disk
+	jp	c,selhd		; Select hard disk
+selerr:
+	ld	hl,0		; Error return code
+	ret
+
+; Disk number is in the proper range
+
+selok:
+	ld	(sekdsk),a
+	ld	a,e
+	rra			; Check for new mount
+	jp	c,setparms	; Not a new mount
+setup:
+	ld	b,255		; Force seek on next read/write
+	ld	(drive),bc	; Set drive and track
+	ld	de,mfm		; Start with dd mini
+	ld	a,255
+	ld	(first),a	; Ignore DNR the first time (?)
+	call	restore		; First 77 tracks
+	call	restore		; And the rest
+	call	readid		; Check if readable
+	or	a
+	jp	nz,setup8
+	ld	a,(resr)	; Sector number
+	cp	17
+	jr	nc,selnat	; Native format
+	ld	a,(resn)	; Sector size
+	cp	1
+	jr	z,selhit	; Hitachi format
+	cp	3
+	jr	z,selosb	; Osborne format
+;
+; Determine if Kaypro or Ampro format
+;
+	ld	a,10		; Check 10 sectors
+set0:
+	push	af		; Save the count
+	call	readid
+	ld	a,(resr)	; Get sector number
+	cp	0
+	jr	z,selkay	; Only Kaypro has a sector 0
+	pop	af
+	dec	a
+	jr	nz,set0
+selamp:
+	ld	de,0
+	ld	bc,dpbamp
+	ld	a,5		; Format number -1
+	jr	set1
+selhit:
+	ld	de,0
+	ld	bc,dpbhit
+	ld	a,2
+	jr	set1
+selosb:
+	ld	de,0
+	ld	bc,dpbosb
+	ld	a,4
+	jr	set1
+selnat:
+	ld	a,(resn)
+	ld	de,0
+	ld	bc,dpbnat1
+	cp	2
+	jr	z,selnat1
+	ld	bc,dpbnat2
+selnat1:
+	dec	a
+	dec	a
+	jr	set1
+selkay:
+	pop	af		; Adjust the stack
+	ld	de,0
+	ld	bc,dpbkay
+	ld	a,3
+;
+; Arrive here with format number (0-8) in A, dpb in BC and xlate in DE
+;  Set up parameter table and DPH
+;
+set1:
+	push	de
+	call	selend		; Get pointer to dph
+	pop	de
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	ld	de,9
+	add	hl,de		; Point to dpb entry
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b		; Put dpb address in dph
+	ld	e,a		; Format number to E
+	ld	d,3		; Times 3
+	mlt	de		; In DE
+	ld	hl,fmttbl	; Format table
+	add	hl,de		; Point to parameters for this format
+;
+; Move fmttbl entry into parmtbl
+;
+	push	hl		; Save pointer to format table
+	ld	de,(sekdsk)	; Get disk number
+	ld	d,3		; Times 3
+	mlt	de		; In DE
+	ld	hl,parmtbl
+	add	hl,de
+	pop	de		; Format table
+	ld	b,3		; Move three bytes
+set2:
+	ld	a,(de)
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	set2
+;
+; Arrive here with format data in parmtbl
+;
+setparms:
+	call	selend		; Get pointer to dph
+	ld	de,10
+	add	hl,de		; Point to dpb entry
+	ld	a,(hl)		; Low byte of dpb address
+	inc	hl
+	ld	h,(hl)		; High byte of dpb address
+	ld	l,a		; Low byte to L
+	ld	a,(hl)		; Get first byte of dpb
+	ld	(cpmspt),a	; Save it for de-blocker
+	ld	a,(sekdsk)	; Disk number
+	call	gettype
+	bit	5,a		; Test eight inch
+	ld	de,mfm		; Assume five inch double density
+	jr	z,setp		; If five inch
+	ld	d,255		; Set eight inch
+	bit	7,a		; Test double density
+	jr	nz,setp		; Double density
+	ld	e,0
+
+setp:
+	ld	(sekmfm),de	; Save it for the de-blocker
+	ld	b,a		; Save type
+	and	3		; Isolate sector size
+	ld	(secshf),a	; Sector shift factor
+	jr	z,stp1
+	ld	c,a		; A counter
+	xor	a		; Clear a
+stp0:
+	scf
+	rla
+	dec	c
+	jr	nz,stp0
+stp1:
+	ld	(secmsk),a
+	ld	a,b		; Get type byte
+	and	0ch		; Isolate allocation size
+	rra
+	rra			; Shift to lo order
+	ld	b,a		; Save it
+	or	a		; SET ZERO FLAG
+	ld	a,8		; Eight records per K
+	jp	z,stp20
+stp2:
+	add	a,a
+	djnz	stp2
+stp20:
+	ld	(ucount),a	; Initial un-allocated count
+;
+selend:
+	ld	hl,(sekdsk)	; L=disk number 0,1,2,3
+	ld	h,16		; H is the multiplier
+	mlt	hl		; HL=H*L
+	ld	de,dpbase
+	add	hl,de		; HL=.dpbase(diskno*16)
+	ret
+;
+; Come here on 5 inch readid error and check for 8 inch drive
+;
+setup8:
+	call	eight		; Turn 5 inch motors off (selects 8 inch)
+	ld	a,1
+	ld	(track),a
+	call	fdseek
+	call	readid
+	or	a
+	jp	nz,sden		; Can't read this disk, Try single density
+	ld	a,(resn)	; Sector size
+	cp	2
+	ld	de,tccs2a
+	ld	bc,dpbd2a
+	ld	a,8
+	jp	z,set1
+	ld	de,tccs3
+	ld	bc,dpbd3
+	ld	a,7
+	jp	set1
+sden:
+	ld	e,0		; Single density
+	call	readid
+	or	a
+	jp	nz,selerr	; Only 128 byte sectors supported
+	ld	de,tibm
+	ld	bc,dpbibm
+	ld	a,6
+	jp	set1		; Continue with normal setup
+;
+eight:
+	ld	de,255*256+mfm	; Eight inch DOUBLE density
+motor8:
+	ld	a,(motim)
+	or	a
+	ret	z		; Motors already off
+	call	motoff		; Turn motors off
+	ld	hl,(spinup)	; Allow for "spin-up time"
+	ld	(dtimer),hl
+mot1:
+	ld	hl,(dtimer)
+	ld	a,h
+	or	l
+	jr	nz,mot1
+	ret
+;
+motoff:
+	xor	a		; Get a zero
+	ld	(motim),a	; Set timer to zero
+	out0	(trdr),a	; To CSI/O
+	ld	a,10h
+	out0	(cntr),a	; To TXS, Motors off
+	in	a,(reseton)	; Start FDC reset
+	ld	a,0		; Waste some time
+	ld	a,0
+	in	a,(resetof)	; Stop FDC reset
+	push	hl		; Save registers
+	ld	hl,(fdcspec)
+	call	specfdc		; Respecify FDC parms
+	pop	hl		; Restore registers
+	ret
+;
+; Format table is comprised of type, bot and eot values
+;
+fmttbl:
+	db	11000110b,17,26	; Native 1
+	db	11000111b,17,21	; Native 2
+	db	11000101b,1,16	; Hitachi
+	db	10000010b,0,9	; Kaypro
+	db	10000011b,1,5	; Osborne
+	db	10000110b,1,10	; Ampro
+	db	00100000b,1,26	; IBM 8 inch
+	db	10100111b,1,8	; CCS ssdd
+	db	11100110b,1,15	; CCS dsdd
+;
+; Enter with disk number in A
+; Exit with HL pointing to parameter entry and type in A
+;
+gettype:
+	push	de
+	ld	e,a		; Disk No. in E
+	ld	d,3		; Times 3
+	mlt	de		; In DE
+	ld	hl,parmtbl
+	add	hl,de
+	ld	a,(hl)
+	pop	de
+	ret
+;
+; Select hard disk
+; 
+selhd:
+	ld	(sekdsk),a
+	ld	a,e
+	rra
+	jr	c,selhd1	; not a new mount
+	ld	a,(hdtyp)
+	cp	2		; Xebec 1410?
+	jr	nz,selhd1	; not Xebec
+; Build the Xebec init block
+	ld	hl,(cyls)
+	ld	e,h
+	ld	d,l
+	ld	(hstbuf),de
+	ld	a,(heads)
+	ld	(hstbuf+2),a
+; Multiply hl by 3
+	ld	d,h
+	ld	e,l
+	add	hl,hl		; *2
+	add	hl,de		; *3
+; Now, divide it by 4
+
+	ld	bc,0
+	ld	de,4
+div4:
+	sbc	hl,de
+	jr	c,div4a
+	inc	bc
+	jr	div4
+div4a:
+	ld	l,b
+	ld	h,c
+	ld	(hstbuf+3),hl
+	ld	(hstbuf+5),hl
+	ld	a,11
+	ld	(hstbuf+7),a
+
+; Give format info to controller
+
+	ld	a,12		; init drive command
+	ld	(hdcdb),a
+	call	exec		; to the controller
+selhd1:
+	ld	a,32
+	ld	(ucount),a
+	ld	a,2
+	ld	(secshf),a
+	ld	a,3
+	ld	(secmsk),a
+	jp	selend		; return to caller
+;
+; Set dma address given by registers b and c
+;
+setdma:
+	ld	(dmaadr),bc	; Save the address
+	ret
+;
+; Set track given by bc
+;
+settrk:
+	ld	(sektrk),bc
+	ret
+;
+; Set sector given by register c
+;
+setsec:
+	ld	(seksec),bc
+	ret
+;
+; Translate the sector given by BC using the
+; Translate table given by DE
+;
+sectran:
+	ld	(cpmsec),bc	; Logical sector from ZRDOS
+	ld	a,d
+	or	e		; Check DE equal zero (no translation)
+	ld	h,b
+	ld	l,c
+	ret	z		; Return to ZRDOS
+;
+	ld	a,c		; Logical sector
+	call	physec		; Convert to physical sector
+	ld	b,a		; In B
+	ld	a,(de)		; DE points to skew table
+	ld	c,a		; SPT
+	inc	de
+	ld	a,(de)
+	ld	h,a		; SKF
+	inc	b		; SECTOR+1
+	xor	a		; CLEAR A
+	ld	e,a		; AND E
+	sub	h		; Initialize A
+sec0:
+	add	a,h		; ADD SKF
+	cp	c
+	jr	c,sec1		; CHECK FOR WRAP
+	sub	c		; IF SO
+	jr	nz,sec1		; CHECK FOR REPEAT
+	inc	e		; IF SO
+sec1:
+	dec	b		; DECREMENT SECTOR NUMBER
+	jr	nz,sec0		; Continue building the sector number
+	add	a,e		; Add in the number of repeats
+	ld	l,a		; Save it for now
+	ld	h,0
+	ld	a,(secshf)
+	or	a
+	ret	z		; If 128 byte sectors, we are finished.
+	ld	b,a		; Save shift factor as a counter.
+	ld	a,l		; Get physical (skewed) sector.
+sec2:
+	rla			; Shift it into position
+	djnz	sec2		; Until B = 0
+	ld	l,a		; In L
+	ld	a,(secmsk)	; Sector mask
+	ld	c,a		; To C
+	ld	a,(cpmsec)	; Logical sector
+	and	c		; Mask hi bits off
+	or	l		; Or them with skewed and shifted physical sec.
+	ld	l,a		; To L
+	ret			; To ZRDOS
+;
+; Translate tables consist of Physical sectors per track and Skew factor.
+;
+tibm:	db	26,6
+tccs3:	db	8,3
+tccs2a:	db	15,4
+;
+
+;
+; Enter with logical sector in A
+; Exit with physical sector in A
+;
+physec:
+	ld	c,a
+	ld	a,(secshf)
+	or	a
+	ld	b,a
+	ld	a,c
+	ret	z
+phyloop:
+	or	a
+	rra
+	djnz	phyloop
+	ret
+;
+; Sector blocking and de-blocking routines.
+;
+read:
+	ld	a,(mdskact)
+	or	a
+	jp	nz,readmdsk
+;
+	ld	(unacnt),a	; Clear un-allocated count to force flush.
+	inc	a		; Non-zero
+	ld	(readop),a	; Read operation
+	ld	(rsflag),a	; Read sector flag
+	ld	a,wrual		; Treat as un-allocated
+	ld	(wrtype),a	; Save it
+	jr	rwoper		; Go to common code
+;
+write:
+	ld	a,(mdskact)
+	or	a
+	jp	nz,writemdsk
+
+	ld	(readop),a	; Write operation
+	ld	a,c		; Get write type from DOS
+	ld	(wrtype),a	; Save it
+	cp	wrual		; Unallocated write?
+	jr	nz,chkuna	; No. Check for unallocated sector
+;
+; Write to un-allocated sector, set parameters
+;
+	ld	a,(ucount)	; Records/allocation group
+	ld	(unacnt),a	; Unallocated count
+	ld	a,(sekdsk)	; Selected disk
+	ld	(unadsk),a	; For us
+	ld	hl,(sektrk)	; Selected track
+	ld	(unatrk),hl	; For us
+	ld	a,(cpmsec)	; Selected sector
+	ld	(unasec),a	; For us
+;
+chkuna:
+	ld	a,(unacnt)	; Any unallocated records remaining?
+	or	a
+	jr	z,alloc		; None remain.
+;
+; More unallocated records remain. Check for any change.
+;
+	dec	a		; Decrement unallocated count
+	ld	(unacnt),a	; And save it
+	ld	a,(sekdsk)	; New disk
+	ld	hl,unadsk	; Old disk
+	cp	(hl)		; Same?
+	jr	nz,alloc	; If not
+;
+; Disks are the same.
+;
+	ld	hl,unatrk	; Old track
+	call	sektrkcmp	; Compare with new track
+	jr	nz,alloc	; If not the same
+;
+; Tracks are the same.
+;
+	ld	a,(cpmsec)	; New sector
+	ld	hl,unasec	; Old sector+1
+	cp	(hl)		; Same?
+	jr	nz,alloc	; If not the same
+;
+; Everything matches, anticipate the next sector
+;
+	inc	(hl)		; Unasec+1
+	ld	a,(cpmspt)	; Max sectors per track
+	cp	(hl)		; Compare them
+	jr	nz,noovf	; Not yet
+;
+; Overflow to next track
+;
+	ld	(hl),0		; Unasec = 0
+	ld	hl,(unatrk)
+	inc	hl
+	ld	(unatrk),hl	; Unatrk+1
+;
+; Match found.	Pre-read not necessary.
+;
+noovf:
+	xor	a		; Clear acc
+	ld	(rsflag),a	; Read not necessary
+	jr	rwoper		; Go to common code
+;
+; Not an unallocated record.  Requires pre-read
+;
+alloc:
+	xor	a		; Clear acc
+	ld	(unacnt),a	; Start over
+	inc	a
+	ld	(rsflag),a	; Force pre-read
+;
+; Read/Write common code
+;
+rwoper:
+	xor	a		; Clear acc
+	ld	(erflag),a	; Start with no errors
+	ld	(tries),a
+	ld	a,(seksec)
+	call	physec		; Get physical sector
+	ld	(sekhst),a	; Physical sector (rel 0)
+;
+; Check host active
+;
+	ld	hl,hstact	; Host active flag
+	ld	a,(hl)		; Get it
+	ld	(hl),1		; Set it in any case
+	or	a		; Set flags
+	jr	z,filhst	; Fill host buffer
+;
+; Host buffer is active.  Same as seek buffer?
+;
+	ld	a,(sekdsk)	; New disk
+	ld	hl,hstdsk	; Old disk
+	cp	(hl)		; Same?
+	jr	nz,nomatch	; Nope.
+;
+; Same disk.  Same track?
+;
+	ld	hl,hsttrk
+	call	sektrkcmp	; Compare old and new tracks
+	jr	nz,nomatch	; Nope.
+;
+; Same track.  Same host sector?
+;
+	ld	a,(sekhst)	; New physical sector
+	ld	hl,hstsec	; Old physical sector
+	cp	(hl)
+	jr	z,match		; The same
+;
+; Not a match.
+;
+nomatch:
+	ld	a,(hstwrt)	; Write pending?
+	or	a
+	call	nz,writehst	; Write host buffer to disk if so.
+;
+; Fill the host buffer if necessary.
+;
+filhst:
+	ld	a,(sekdsk)	; New disk
+	ld	(hstdsk),a	; Make it current
+	ld	hl,(sektrk)	; New track
+	ld	(hsttrk),hl	; Make it current
+	ld	a,(sekhst)	; New physical sector
+	ld	(hstsec),a	; Make it current
+	ld	a,(sekmfm)	; New density
+	ld	(hstmfm),a	; Make it current
+	ld	a,(sekmaxi)	; New disk size (5 or 8 inch)
+	ld	(hstmaxi),a	; Make it current
+	ld	a,(rsflag)	; Pre-read necessary?
+	or	a
+	call	nz,readhst	; Read a sector if so.
+	xor	a		; Clear acc
+	ld	(hstwrt),a	; Clear write pending flag
+;
+; We have a match.
+;
+match:
+	ld	a,(secmsk)	; Get the sector mask
+	ld	b,a		; Save it
+	ld	a,(seksec)	; Get new sector
+	and	b		; Mask off the high bits
+	ld	h,a		; Multiplicand
+	ld	l,128		; Multiplier
+	mlt	hl		; Product in HL
+;
+; HL now has relative host buffer address of seksec
+;
+	ld	de,hstbuf	; Host buffer address
+	add	hl,de		; Point to the sector
+	ld	de,(dmaadr)	; User's buffer
+	ld	bc,128		; Number of bytes to transfer
+	ld	a,(readop)	; Direction?
+	or	a		; Set flags
+	jr	nz,rwmove	; Read
+;
+; Must be Write.  Mark and change direction.
+;
+	inc	a		; A = 1
+	ld	(hstwrt),a	; Set write pending flag
+	ex	de,hl		; Swap source and destination
+;
+; Move the data
+;
+rwmove:
+	ldir
+;
+; Data has been moved
+;
+	ld	a,(wrtype)
+	dec	a		; Directory write? Set zero flag
+	ld	a,(erflag)	; In case of error
+	ret	nz		; Not a directory write. Go home
+;
+; This was a Directory Write.  Write it now!
+;
+	or	a		; Check error flag
+	ret	nz		; If any error
+	ld	(hstwrt),a	; Clear write pending flag
+	call	writehst	; Write to disk
+	ld	a,(erflag)	; In case of error
+	ret			; To caller
+;
+; Utility subroutine for 16-bit compare
+;
+sektrkcmp:
+	ld	de,sektrk
+	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	ld	a,(de)
+	cp	(hl)
+	ret
+;
+; Use hstdsk, hsttrk, hstsec to read or write the disk.
+;  Return erflag non-zero on un-recoverable error.
+;
+readhst:
+	or	255
+	jr	hstio
+writehst:
+	xor	a
+hstio:
+	push	af		; Save flags
+	ld	a,(hstdsk)
+	cp	4		; First Hard disk
+	jp	nc,hdio		; Hard disk I/O
+	call	seek		; Seek if necessary
+	ld	hl,sbias	; Sector bias
+	ld	a,(hstsec)	; Host sector (rel 0)
+	add	a,(hl)		; Add the bias
+	ld	(sector),a
+	pop	af		; Get flags
+	jr	z,fdwrite
+;
+; Floppy disk I/O routines
+;
+fdread:
+	in0	a,(dcntl)
+	set	1,a
+	out0	(dcntl),a	; Read direction
+	call	dmaset		; Set up the dma controller
+	ld	b,9		; 9 bytes in the read command
+	ld	a,e		; MFM flag
+	or	rdcm
+	ld	c,a
+	jr	outcmd
+;
+fdwrite:
+	in0	a,(dcntl)
+	res	1,a
+	out0	(dcntl),a	; Write direction
+	call	dmaset
+	ld	b,9		; 9 bytes in the write command
+	ld	a,e		; MFM flag
+	or	wrcm
+	ld	c,a
+	jr	outcmd
+;
+; On entry, D is maxi flag, E is mfm flag
+;
+readid:
+	ld	b,2		; 2 bytes in the read id command
+	ld	a,e
+	or	rdidcm
+	ld	c,a
+	jr	outcmd
+
+; Come here from readhst and writehst to select the disk and position
+; the heads, if necessary
+;
+seek:
+	ld	a,(hstdsk)	; Current disk
+	call	gettype		; Get type and point to parameters
+	ld	c,a		; Save type
+	inc	hl		; Point to bias
+	ld	a,(hl)		; Get sector bias
+	ld	(sbias),a	; Save it
+	inc	hl		; Point to eot
+	ld	a,(hl)		; Get eot
+	ld	(eot),a		; Save it
+	ld	a,c		; Get type
+	and	3		; Mask sector size
+	ld	(size),a	; Put it in the command block
+	ld	b,a		; A counter (1=256, 2=512, 3=1024)
+	ld	hl,128
+	jr	z,sk10
+sk1:
+	add	hl,hl
+	djnz	sk1
+sk10:
+	ld	(bytes),hl
+	ld	a,c		; Get type again
+	rla
+	rla			; Set carry if double sided
+	ld	a,(hsttrk)	; Desired cpm track
+	jr	nc,sk0
+	or	a		; Reset carry
+	rra			; Divide by two for physical track
+sk0:
+	ld	b,a		; Save it a moment
+	ld	a,0		; Clear A
+	rla			; Carry into A
+	ld	(head),a	; Carry means head 1
+	rla
+	rla			; Hds position
+	ld	c,a		; Save it
+	ld	hl,track	; Point to old track
+	ld	a,b		; Get new track
+	cp	(hl)		; Compare them
+	push	af		; Save zero flag
+	ld	(hl),a		; Update track
+	ld	a,(drive)	; Old drive
+	and	3		; Mask hds bit
+	ld	hl,hstdsk	; New drive
+	cp	(hl)		; Compare them
+	push	af		; Save zero flag
+	ld	a,(hl)		; Get new disk
+	or	c		; Or in hds bit
+	ld	(drive),a	; Update drive
+	ld	de,(hstmfm)
+	pop	af		; Get dsk cmp result
+	jr	nz,sek0		; Disks not same, seek.
+	pop	af		; Get trk cmp result
+	ret	z		; Dsk and track the same, no seek
+	jr	sek1		; Do the seek
+sek0:
+	pop	af		; Adjust stack
+sek1:
+	call	readid		; Find out where we are
+fdseek:
+	ld	bc,3*256+seekcm	; 3 bytes in the seek command
+	jr	outcmd
+restore:
+	ld	bc,2*256+rescm
+;
+; Enter here for all floppy disk commands
+;
+outcmd:
+	call	motor		; Insure motors are on
+	ld	a,40h
+	ld	(fdbusy),a	; Mark fdc busy
+	ld	hl,fdcom	; Point to command block
+	ld	(hl),c		; Command passed in C
+	ld	c,fdcdt		; Fdc data port
+otloop:
+	call	cbusy		; Wait for rqm and dio*
+	outi			; Output command bytes to fdc
+	jr	nz,otloop	; Loop until done
+	ld	a,81h
+	out0	(rcr),a		; Fast refresh
+waitint:
+	ld	a,(fdbusy)
+	bit	6,a
+	jr	nz,waitint	; Wait here for fdc interrupt
+;
+; Get any error status and combine it in A
+;
+	ld	a,(st0)		; First status byte
+	ld	b,a		; Save it a moment
+	and	00010000b	; Equipment check
+	rla
+	rla			; Move it to bit 6
+	ld	c,a		; Save it
+	ld	a,b		; Original status
+	and	00001000b	; Drive not ready
+	or	c		; Get ec bit
+	ld	c,a		; Save them
+	ld	a,(st1)		; Second status byte
+	or	c		; Combined status
+	ld	(erflag),a	; For de-blocker
+	ret	z		; No error, return to caller
+
+	and	4ah		; Check drive status error
+	jp	nz,fderr
+;
+; Fall through to here on any fdc error.  Retry the operation
+;  a number of times.
+;
+try:
+	ld	hl,tries	; Number of tries remaining
+	ld	a,(hl)
+	or	a
+	jr	nz,try0
+	ld	(hl),retries
+try0:
+	dec	(hl)		; Less 1
+	ld	a,(erflag)
+	ret	z		; No more tries, return with error
+
+	ld	a,(fdcom)	; Determine which command gave the error
+	and	0fh		; Mask off the MFM bit
+	cp	rdidcm
+	ret	z		; Don't retry rdid command
+	cp	rdcm
+	jp	z,retrd
+	cp	wrcm
+	jp	nz,commerr	; Command error
+retwr:
+	ld	a,(hl)		; Which retry is this?
+	cp	retries-1	; If first retry, recal heads
+	jr	nz,retwr1
+	call	restore
+	call	restore
+retwr1:
+	call	readid		; Where am I?
+	call	fdseek		; Go where I want to go
+	jp	fdwrite
+retrd:
+	ld	a,(hl)		; Which retry is this?
+	cp	retries-1	; If first retry, recal heads
+	jr	nz,retrd1
+	call	restore
+	call	restore
+retrd1:
+	call	readid		; Where am I?
+	call	fdseek		; Go where I want to go
+	jp	fdread
+;
+; Come here on hardware fault
+;
+fderr:
+	bit	3,a		; Drive not ready
+	ld	hl,dnrmsg
+	jp	nz,perr
+	bit	1,a		; Write protected
+	ld	hl,wrpmsg
+	ret	z		; Equipment check, ignore it.
+perr:
+	ld	a,(first)	; Ignore error on first restore in SETUP:
+	or	a
+	ld	a,0
+	ld	(first),a	; Clear first time flag
+	jr	nz,ignore
+	call	print
+	db	cr,lf,'Drive ',0
+	ld	a,(drive)
+	and	3
+	add	'A'
+	ld	c,a
+	ld	a,(swapped)
+	add	c
+	ld	c,a
+	call	coutiop
+	call	pstr
+	call	print
+	db	' (Retry or Quit) ',0
+	call	ciniop		; Wait for response
+	push	af
+	ld	c,cr
+	call	coutiop
+	ld	c,lf
+	call	coutiop
+	pop	af
+	and	5fh
+	cp	'Q'
+	jp	z,wboot
+ignore:
+	ld	a,(fdcom)
+	and	0fh
+	cp	rescm
+	jp	z,restore	; Return to original caller
+	cp	rdidcm
+	jp	z,readid
+	cp	seekcm
+	jp	z,fdseek
+	xor	a
+	ld	(tries),a
+	jp	try
+
+first:	ds	1		; First time flag
+dnrmsg:	db	' is Not Ready',0
+wrpmsg:	db	' is Write Protected',0
+
+commerr:
+	call	print
+	db	cr,lf,'Bad Command..',0
+	jp	wboot		; Give up
+;
+; FDC Interrupt service routine
+;
+intfdd:
+	ld	(locstk),sp
+	ld	sp,locstk
+	push	hl
+	push	de
+	push	bc
+	push	af		; Save the registers
+	ld	hl,0
+	ld	(st0),hl
+	ld	hl,st0		; Point to result status area
+	ld	a,83h
+	out0	(rcr),a		; Slow refresh
+intwait:
+	call	busy		; Get status, zero reflects dio
+	bit	cb,a
+	jr	z,sis		; Interrupting command has no result phase
+	ld	c,fdcdt
+getres:
+	call	busy
+	jr	z,sis		; Result phase is over
+	ini
+	jr	getres
+sis:
+	call	cbusy
+	ld	a,siscm		; Sense interrupt status command
+	out	(fdcdt),a	; To the fdc
+	call	sbusy
+	in	a,(fdcdt)
+	cp	80h
+	jr	z,intend
+	ld	(st0),a
+	call	sbusy
+	in	a,(fdcdt)
+	jr	sis
+intend:
+	ld	hl,fdbusy
+	res	6,(hl)		; Tell outcmd the fdc is free
+	pop	af
+	pop	bc
+	pop	de
+	pop	hl		; Restore the registers
+	ld	sp,(locstk)
+	ei			; Enable interrupts
+	ret
+;
+; FDC busy check
+;
+busy:
+	ld	a,12		; Wait 12*2 (24) usec.
+bsyloop:
+	dec	a
+	jr	nz,bsyloop	; 2 usec loop
+	in	a,(fdcsts)	; Fdc status port
+	bit	rqm,a
+	jr	z,busy		; Wait for rqm
+	bit	dio,a		; Set flag according to dio
+	ret
+;
+cbusy:
+	call	busy
+	ret	z
+	call	print
+	db	cr,lf,'Command phase error',0
+	jr	phaserr
+;
+sbusy:
+	call	busy
+	ret	nz
+	call	print
+	db	cr,lf,'Result phase error',0
+;
+phaserr:
+	call	busy
+	jr	z,pher1		; Command phase
+	in	a,(fdcdt)	; Read bytes until result phase ends
+	jr	phaserr
+pher1:
+	xor	a		; Invalid command clears fdc
+	out	(fdcdt),a
+	call	busy
+	in	a,(fdcdt)	; Read a single result byte
+	ld	hl,(fdcspec)	; Re-specify the fdc parameters
+	call	specfdc
+	jp	wboot		; Quit
+;
+; Motor routine will determine if the drive motors are on.
+;  If not on, turn them on and wait for spinup time.
+; In any case, set motor on time to motime seconds.
+;
+motor:
+	ld	a,d		; Maxi flag
+	or	a
+	jp	nz,motor8	; Motors off and return to caller
+
+	di			; Stop the clock for a few usecs.
+	ld	a,(motim)	; Seconds remaining
+	or	a		; Check for zero
+	ld	a,(motime)	; Get the default time
+	ld	(motim),a	; And start again
+	ei			; Let the clock go.
+	ret	nz		; Motors were on and will stay on.
+
+	or	255
+	out0	(trdr),a	; Put ones in it
+	ld	a,10h
+	out0	(cntr),a	; Send ones to TXS
+
+	in	a,(reseton)	; Start FDC reset
+	ld	a,0		; Waste some time
+	ld	a,0
+	in	a,(resetof)	; Stop FDC reset
+	ld	hl,(fdcspec)	; Respecify FDC parms
+	call	specfdc
+
+	ld	hl,(spinup)	; How long shall we wait?
+	ld	(dtimer),hl	; Load the down-counter (100 ms)
+motwait:
+	ld	hl,(dtimer)
+	ld	a,h
+	or	l
+	jr	nz,motwait	; Wait for the clock to count it down
+	ret
+;
+; Set up DMA channel 1 for floppy disk read or write
+;
+dmaset:
+	xor	a		; 0 to acc
+	out0	(dstat),a	; Disable dma
+	ld	hl,dmatbl	; Beginning of dma control block
+	ld	bc,8*256+mar1l	; Eight bytes, first dma port
+	otimr			; Output 8 bytes to 8 ports
+	ld	a,80h
+	out0	(dstat),a	; Enable dma
+	ret
+;
+; Ram disk read and write routines
+;
+readmdsk:
+	or	255		; Set flags
+	jr	mdskio
+writemdsk:
+	xor	a		; Clear flags
+mdskio:
+	push	af		; Save flags
+	ld	a,bank0	shr 4	; This bank address
+	ld	(dmaadr+2),a	; Otherwise un-initialized byte
+	ld	hl,mdskbnk
+	ld	a,(sektrk)
+	add	a,(hl)
+	rlca
+	rlca
+	rlca
+	rlca
+	ld	l,a
+	and	a,0fh
+	ld	(mdskadr+2),a
+	ld	a,(seksec)
+	rra
+	ld	h,a
+	ld	a,l
+	ld	l,0
+	rr	l
+	and	a,0f0h
+	or	a,h
+	ld	h,a
+	ld	(mdskadr),hl
+;
+; Arrive here with addresses at DMAADR and MDSKADR.  Determine direction
+;  and set up DMA0TBL appropriately.
+;
+	ld	hl,dmaadr	; Users DMA address
+	ld	de,mdskadr	; Ram disk address
+	pop	af		; Get Read flag (Zero if write)
+	jr	z,mdskwr	; If writing Ram disk
+	ex	de,hl		; Swap source and destination to read
+mdskrd:
+mdskwr:
+	push	de		; Save Destination address
+	ld	de,sarl		; DMA0 source address
+	ld	bc,3		; Three bytes
+	ldir			; Move them
+
+	pop	hl		; Get Destination address
+	ld	de,darl		; DMA0 destination address
+	ld	bc,3
+	ldir
+
+	ld	hl,sarl		; Point to Init block
+	ld	bc,8*256+sar0l	; Eight bytes from sarl to ports sar0l
+	otimr
+
+	ld	a,00000010b
+	out0	(dmode),a	; Set DMA0 mode control (burst mode)
+
+	ld	a,40h		; Enable DMA0
+	out0	(dstat),a	; DMA status register
+
+	xor	a
+	ret
+;
+; Come here every 100 milliseconds on interrupt from PRT0
+;
+inttim0:
+	ld	(locstk),sp	; Save user's stack
+	ld	sp,locstk	; Our own stack
+	push	hl
+	push	de
+	push	bc
+	push	af		; Save the registers
+;
+	in0	a,(tcr)
+	in0	a,(tmdr0l)
+	in0	a,(tmdr0h)	; Clear the interrupt
+;
+	ld	hl,(dtimer)	; General purpose timer for the user
+	dec	hl
+	ld	(dtimer),hl
+;
+	ld	hl,moton
+	push	hl		; Save address on stack for RET
+	ld	hl,wallclock
+	push	hl		; Save address on stack for RET
+;
+realclock:
+	ld	hl,tenths	; 100 ms counter
+	ld	a,10
+	call	timud		; Update the byte (mod 10)
+	jr	nz,timex0	; Quit
+
+	inc	hl		; Point to seconds
+	ld	a,60
+	call	timud		; Update seconds (mod 60)
+	ret	nz		; To wallclock
+
+	inc	hl		; Point to minutes
+	ld	a,60
+	call	timud		; Update minutes (mod 60)
+	ret	nz		; To wallclock
+
+	inc	hl		; Point to hours
+	ld	a,24
+	call	timud		; Update hours (mod 24)
+	pop	hl		; Adjust the stack
+;
+wallclock:
+	ld	hl,wsec		; Point to seconds
+	ld	a,60
+	call	timud		; Update seconds (mod 60)
+	ret	nz		; To moton
+
+	inc	hl		; Point to minutes
+	ld	a,60
+	call	timud		; Update minutes (mod 60)
+	ret	nz		; To moton
+
+	inc	hl		; Point to hours
+	ld	a,24
+	call	timud		; Update hours (mod 24)
+	pop	hl		; Adjust the stack
+;
+moton:
+	ld	hl,motim	; Current motor on timer (secs)
+	xor	a
+	or	(hl)		; Set flags
+	jr	z,timex		; Motors are off.  Forget it.
+	dec	(hl)
+;
+; We have timed out.  Turn the motors off.
+;
+	call	z,motoff
+;
+timex:
+	pop	af
+	pop	bc
+	pop	de
+	pop	hl		; Restore registers
+	ld	sp,(locstk)	; And stack pointer
+	ei
+	ret
+;
+timex0:
+	pop	hl
+	pop	hl		; Clear the stack
+	jr	timex		; Go home
+;
+timud:
+	inc	(hl)
+	sub	(hl)
+	ret	nz
+	ld	(hl),a
+	ret
+;
+; INT1 returns here after printer acknowledges the character
+;
+intlpt:
+	ld	(locstk),sp
+	ld	sp,locstk
+	push	af		; Save the accumulator and flags
+	ld	a,255		; Ready flag
+	ld	(prtrdy),a	; Set the ready flag
+	out	(centdc),a	; Clear the interrupt
+	pop	af		; Restore accumulator and flags
+	ld	sp,(locstk)
+	ei			; Enable the interrupt system
+	ret
+;
+; Floppy disk command and result tables
+;
+fdcom:	ds	1
+drive:	ds	1
+track:	ds	1
+head:	ds	1
+sector:	ds	1
+size:	db	1
+eot:	db	16
+gpl:	db	14
+dtl:	db	255
+;
+st0:	ds	1
+st1:	ds	1
+st2:	ds	1
+resc:	ds	1
+resh:	ds	1
+resr:	ds	1
+resn:	ds	1
+;
+dma0tbl:
+sarl:	db	0		; Sar0l
+sarh:	db	0		; Sar0h
+sarb:	db	4		; Sar0b
+darl:	db	0		; Dar0l
+darh:	db	0		; Dar0h
+darb:	db	4		; Dar0b
+bytes0:	dw	128		; Bcr0l, bcr0h
+;
+dmatbl:	dw	hstbuf		; Mar1l, mar1h
+bank:	db	bank0 shr 4	; Mar1b
+	dw	fdcdma		; Iar1l, iar1h
+	db	0		;
+bytes:	dw	256		; Bcr1l, bcr1h
+;
+; Print routine prints to console the string at (sp)
+;
+print:
+	ex	(sp),hl
+	call	pstr
+	ex	(sp),hl
+	ret
+pstr:
+	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	ld	c,a
+	call	coutiop
+	jr	pstr
+;
+; Interrupt service routine to fill type-ahead buffer
+;
+	 if	typahd
+intasci1:
+	ld	(locstk),sp
+	ld	sp,locstk
+	push	hl
+	push	de
+	push	bc
+	push	af		; Save the registers
+
+	in0	c,(rdr1)	; Get character from ASCI1
+	res	7,c		; Clear high bit
+	in0	a,(stat1)
+	and	10h		; Test FE (break)
+	jr	z,nobreak	; No error, proceed
+
+	in0	a,(cntla1)	; Control register A
+	and	0f7h		; Ensure EFR=0
+	out0	(cntla1),a	; Reset EFR
+	jr	typex		; Quit
+
+nobreak:
+	ld	hl,typbuf	; Point to character count
+	ld	a,(hl)		; Get it
+	inc	a		; +1
+	cp	buflen		; Buffer full?
+	jr	nc,typex	; Quit if so, otherwise..
+	ld	(hl),a		; Update character count
+	ld	e,a
+	ld	d,0		; Character count in DE
+	add	hl,de		; Point to character position
+	ld	(hl),c		; Stick it in
+typex:
+	pop	af
+	pop	bc
+	pop	de
+	pop	hl		; Restore the registers
+	ld	sp,(locstk)
+	ei			; Enable interrupts
+	ret
+
+getbuf:
+	push	hl
+	push	bc		; Save the registers
+	ld	hl,typbuf+buflen-1 ; Point to end of buffer
+	ld	bc,[buflen-1]*256 ; Length in B, 0 in C
+;
+; 'POP' a character from the buffer
+;
+gbloop:
+	ld	a,(hl)
+	ld	(hl),c
+	ld	c,a
+	dec	hl
+	djnz	gbloop
+	dec	(hl)		; Character count -1
+	or	a		; Clear zero flag (sak)
+	pop	bc
+	pop	hl		; Restore the registers
+	ret
+	 endif			; Typahd
+;
+; Hard disk I/O routines
+; Enter from HSTIO with the read/write flag pushed onto the stack
+; Use hsttrk and hstsec to build block number
+;
+hdio:
+	ld	hl,(hsttrk)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,(hstsec)
+	add	a,l
+	ld	(loblk),a
+	ld	a,h
+	ld	(hiblk),a
+	pop	af		; get r/w flag
+	ld	a,10		; write
+	jr	z,hdwr
+	ld	a,8		; read
+hdwr:
+	ld	(hdcdb),a
+	ld	a,(hdtyp)	; 1 if ACB-4000
+	cp	2
+	ld	a,0
+	jr	c,hdwr0
+	ld	a,(hdstpr)
+	or	a
+	jr	z,hdwr0
+	add	a,5		; A goes to 6 or 7
+
+hdwr0:
+	ld	(hdctl),a	; set control byte
+	ld	a,1
+	ld	(hdsiz),a	; one 512-byte record
+exec:
+	ld	hl,hdcdb
+	ld	de,hstbuf
+	call	select
+	and	2
+	ld	(erflag),a
+	ret
+hdcdb:
+	db	0
+	db	0
+hiblk:	db	0
+loblk:	db	0
+hdsiz:	db	1		; Read/Write 512 bytes
+hdctl:	db	0
+;
+; SCSI drivers
+;
+; Reset the SCSI bus and everything on it
+;
+reset:
+	xor	a		; get a zero
+	out	(nmod),a
+	out	(ntcr),a
+	ld	a,nars		; Assert RST
+	out	(nicr),a
+	ld	b,20		; wait 30 us
+rstdly:
+	djnz	rstdly		; 1.5 us loop
+	xor	a
+	out	(nicr),a	; clear the RST
+	ld	b,nbsy+nsel	; BSY and SEL bits
+	in	a,(ncbs)
+	and	b
+	ret	z		; bus free phase, return to caller
+	call	print
+	db	cr,lf,' Bus not free after RST',cr,lf,0
+	jp	0
+;
+; All commands start here
+; HL points to Command Descriptor Block, DE points to DATA area
+; The command will terminate and RETURN to the caller with MSG in H
+; and status in L and A.
+;
+select:
+	ld	(cmdptr),hl	; caller's command pointer
+	ld	(datptr),de	; callers data pointer
+	ld	a,81h		; our address plus the target address
+	out	(nodr),a
+	ld	a,nadb		; assert data bus
+	out	(nicr),a
+	or	nase		; assert SEL and data bus
+	out	(nicr),a
+;
+; Wait up to 250 ms for BSY from target
+;
+	ld	bc,195		; 195 * 1.28 = 250 ms
+wbsy:	in	a,(ncbs)	; current bus status
+	and	nbsy		; BSY ?
+	jp	nz,bsy		; found BSY
+	djnz	wbsy		; try again (5 us minor loop)
+	dec	c
+	jr	nz,wbsy		; try again (1.28 ms major loop)
+	call	print
+	db	cr,lf,' Target does not respond with BSY',0
+	jp	0
+bsy:
+	ld	a,nadb
+	out	(nicr),a	; drop SEL
+	xor	a
+	out	(nicr),a	; drop data bus
+;
+; Come here when phases change
+;
+phase:
+	in	a,(ncbs)	; bus status
+	and	nmsg+nc_d+ni_o	; mask interesting bits
+	rra			; rotate them into position for jump table
+	ld	e,a
+	rra			; into position for the target command register
+	out	(ntcr),a	; to check phase match
+	ld	d,0
+	ld	hl,phasetbl
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,nreq*256+nphm	; masks
+	jp	(hl)		; go to it
+
+phasetbl:
+	dw	phas0
+	dw	phas1
+	dw	phas2
+	dw	phas3
+	dw	phas4
+	dw	phas5
+	dw	phas6
+	dw	phas7
+
+phas0:	; data out phase
+
+	ld	hl,(datptr)
+	jp	outdata
+
+phas1:	; data in phase
+
+	ld	hl,(datptr)
+	jp	indata
+
+phas2:	; command out phase
+
+	ld	hl,(cmdptr)
+	jp	outdata
+
+phas3:	; status in phase
+
+	ld	hl,status
+	jp	indata
+
+phas7:	; message in phase
+
+	ld	hl,message
+	jp	indata
+
+phas4:
+phas5:
+phas6:
+	call	print
+	db	cr,lf,' Phase error.. Abort',cr,lf,0
+	jp	0
+
+;
+; All commands exit through here
+;
+exit:
+	pop	hl		; adjust the stack pointer
+	xor	a		; get a zero
+	out	(nicr),a
+	out	(ntcr),a
+	ld	hl,(status)	; status in l, msg in h
+	or	l		; status to A with flags
+	ret
+;
+; Enter with hl pointing to buffer
+;
+indata:
+	ld	c,ncsd		; current scsi data
+indat:
+	in	a,(ncbs)
+	and	d
+	jr	z,ibsy?
+	in	a,(nbas)
+	and	e
+	jr	z,nophm
+	ini
+	ld	a,naac
+	out	(nicr),a
+	xor	a
+	out	(nicr),a
+	jp	indat
+;
+ibsy?:
+	call	iobsy?
+	jr	indat
+nophm:
+	jp	phase
+iobsy?:
+	in	a,(ncbs)
+	and	nbsy
+	jp	z,exit
+	ret
+obsy?:
+	call	iobsy?
+	jr	outdat
+
+;
+; Enter with hl pointing to buffer
+;
+outdata:
+	ld	c,nodr		; output data register
+outdat:
+	in	a,(ncbs)
+	and	d
+	jr	z,obsy?
+	in	a,(nbas)
+	and	e
+	jr	z,nophm
+	outi
+	ld	a,naac+nadb
+	out	(nicr),a
+	xor	a
+	out	(nicr),a
+	jp	outdat
+
+;
+; Cold boot entry.  This code is executed only once and so may be
+;  overwritten subsequently by the bios.
+;
+boot:
+	di			; Disable interrupt system
+	ld	sp,80h		; Set local stack
+;
+; Initialize the ZCPR3 buffers
+;
+	jp	zboot		; Jump over data and subroutines
+;
+env:
+	jp	0
+	sysenv			; Environment macro
+cmdset:
+	dw	z3cl+4		; Point to first character in command buffer
+	db	z3cls		; Command buffer size
+	dw	0		; Clear the command line
+path:
+	db	1,0		; A0:
+	db	1,15		; A15:
+	db	0		; End of initial path
+
+;
+; Clear (b) bytes from (hl)
+;
+zero:
+	xor	a		; Clear acc
+zl:
+	ld	(hl),a		; Zero to memory
+	inc	hl		; Next memory location
+	djnz	zl		; Loop until b = 0
+	ret
+;
+; IOP initial data
+;
+iopent:
+	jp	iopend
+	jp	iopend
+	jp	iopend
+	jp	iopend
+	jp	const
+	jp	conin
+	jp	conout
+	jp	list
+	jp	punch
+	jp	reader
+	jp	listst
+	jp	iopend
+	jp	iopend
+	jp	iopend
+	jp	iopend
+	jp	iopend
+	db	'Z3IOP'
+	db	'DUMMY   '
+ioplen	equ	$-iopent
+iopend	equ	iop+ioplen
+	xor	a
+	ret
+;
+; Initialization continues..
+;
+zboot:
+	ld	bc,path-cmdset
+	ld	hl,cmdset
+	ld	de,z3cl
+	ldir
+;
+	ld	bc,10
+	ld	hl,autocmd
+	ld	de,z3cl+3
+	ldir
+;
+	ld	bc,zero-path
+	ld	hl,path
+	ld	de,expath
+	ldir
+;
+	ld	hl,z3whl
+	ld	(hl),255	; Set the wheel byte
+;
+	ld	hl,shstk
+	ld	(hl),0		; Clear the shell stack
+;
+	ld	hl,z3msg
+	ld	b,80
+	call	zero		; Clear the message buffer
+;
+	ld	hl,env
+	ld	de,z3env
+	ld	bc,128+32
+	ldir			; Initialize the Environment
+;
+	ld	hl,iopent
+	ld	de,iop
+	ld	bc,ioplen+2
+	ldir
+;
+	ld	hl,iopret
+	ld	(bios+1),hl
+;
+; Establish the interrupt vector
+;
+	ld	hl,inttbl
+	ld	a,h
+	ld	i,a
+	out0	(il),l
+;
+; Check for 5380 and reset SCSI if present
+;
+	ld	a,40h
+	out	(nicr),a	; Assert TEST bit
+	ld	b,0
+lp1:	djnz	lp1		; Waste some time
+	in	a,(nicr)
+	cp	0ffh
+	jr	nz,noscsi
+	xor	a
+	out	(nicr),a
+	ld	b,0
+lp2:	djnz	lp2		; Waste more time
+	in	a,(nicr)
+	or	a
+	jr	nz,noscsi
+	ld	a,0ffh
+	ld	(hdpres),a
+	call	reset		; Reset the SCSI bus
+	jr	initio
+noscsi:
+	xor	a
+	ld	(hdpres),a
+;
+; Initialize the I/O system
+;
+initio:
+	call	ioinit
+	 if	typahd
+	xor	a
+	ld	(typbuf),a	; Clear the type-ahead buffer
+	 endif
+;
+; Sign on the system
+;
+	call	print
+	db	cr,lf,lf,'SB180 54k Z-System'
+	db	cr,lf,lf,'  BIOS Version ',vers/10+'0','.',vers mod 10+'0'
+	db	',   ',0
+	ld	a,(hdpres)
+	or	a
+	jr	z,bootc1
+	call	print
+	db	'SCSI interface found',cr,lf,0
+	jr	bootc2
+bootc1:
+	call	print
+	db	'No SCSI interface found',cr,lf,0
+;
+; Clean up and go
+;
+bootc2:
+	ld	hl,0		; Get two zeros
+	ld	(hstact),hl	; Clear hstact and unacnt
+	ld	a,l		; Get a zero
+	ld	(cdisk),a	; Select drive A
+	jp	gozsys		; Initialize and go to Z-System
+;
+;	the remainder of the BIOS is reserved uninitialized
+;	data area, and does not need to be a part of the
+;	system memory image.
+;
+	org	boot
+;
+; Blocking/De-blocking variables
+;
+sekdsk:	ds	1		; New disk
+sektrk:	ds	2		; New track
+cpmsec:	ds	2		; New logical sector
+seksec:	ds	2		; New physical sector
+;
+hstdsk:	ds	1		; Current disk
+hsttrk:	ds	2		; Current track
+hstsec:	ds	1		; Current physical sector
+;
+sekhst:	ds	1		; New physical sector
+hstact:	ds	1		; Host active flag
+unacnt:	ds	1		; Unallocated record count
+hstwrt:	ds	1		; Write pending flag
+;
+unadsk:	ds	1		; Current disk
+unatrk:	ds	2		; Current track
+unasec:	ds	1		; Current record
+;
+erflag:	ds	1		; Error flag
+rsflag:	ds	1		; Read sector flag
+readop:	ds	1		; Read operation flag
+;
+wrtype:	ds	1		; Write type
+dmaadr:	ds	2		; User's dma buffer
+dmabnk:	ds	1
+mdskadr:ds	3		; Ram disk address (3 bytes)
+;
+parmtbl:ds	12		; Parameter table (3 bytes per drive)
+;
+sekmfm:	ds	1		; Double density flag
+sekmaxi:ds	1		; Eight inch drive flag
+hstmfm:	ds	1
+hstmaxi:ds	1
+;
+ucount:	ds	1		; Initial un-allocated count
+cpmspt:	ds	2		; Logical sectors per track
+secshf:	ds	1		; Sector shift factor
+secmsk:	ds	1		; Sector mask
+sbias:	ds	1		; Sector bias
+;
+fdbusy:	ds	1		; FDC busy flag
+tries:	ds	1		; Number of re-tries
+hdpres:	ds	1		; Hard disk present flag
+;
+mdskact:ds	1		; Ram disk is selected
+prtrdy:	ds	1		; Printer ready flag
+;
+;	scratch ram area for BDOS use
+;
+all00:	ds	71		; Allocation vector 0
+chk00:	ds	64		; Check vector 0
+all01:	ds	71		; Allocation vector 1
+chk01:	ds	64		; Check vector 1
+all02:	ds	71		; Allocation vector 2
+chk02:	ds	64		; Check vector 2
+all03:	ds	71		; Allocation vector 3
+chk03:	ds	64		; Check vector 3
+all04:	ds	256		; Allocation vector 4
+chk04:	ds	0		; Check vector 4
+all05:	ds	256		; Allocation vector 5
+chk05:	ds	0		; Check vector 5
+all06:	ds	256		; Allocation vector 6
+chk06:	ds	0		; Check vector 6
+all07:	ds	256		; Allocation vector 7
+chk07:	ds	0		; Check vector 7
+;
+all12:	ds	24		; Ram disk allocation (192k)
+chk12:	ds	0		; No check vector
+;
+dirbf:	ds	128		; Scratch directory area
+hstbuf:	ds	1024		; Host buffer
+;
+; The following allocatiion is for the Real Time Clock.  Their relation may
+;  not be changed, although, as a group, they can be placed anywhere.
+;
+rtc:				; Real time clock
+tenths:	ds	4
+wsec:	ds	3
+dtimer:	ds	2
+motim:	ds	1
+;
+; End of Real Time Clock allocation.
+;
+	 if	typahd
+typbuf:	ds	buflen		; Type-ahead buffer
+	 endif
+
+cmdptr:	ds	2
+datptr:	ds	2
+status:	ds	1
+message:ds	1
+
+	ds	32
+locstk:	ds	2
+
+	end
+
