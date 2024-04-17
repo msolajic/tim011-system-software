@@ -5,7 +5,8 @@ BIOS is based on BIOS 3.2 for Micromint SB180.
 Boot ROM is based on Monitor 1.0 for MicroMint SB180.
 
 ## Update 17. April 2024.
-Added reconstructed assembly for Boot ROM, pckbd.iop and pckbd.com (PC Keyboard support routines)
+Added reconstructed assembly for Boot ROM, pckbd.iop and pckbd.com (PC Keyboard support routines).
+
 Fixed BIOS error where ASCI0 has interrupts enabled, but no ISR defined, so any received data trough serial port will cause a "Interrupt error" and lock up the computer.
 
 Commented thoroughly for (mostly) all the changes made to the original.
