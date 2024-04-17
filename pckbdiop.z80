@@ -1,0 +1,307 @@
+; Package Name:  PCKBD.IOP
+; Author:  Institut "Mihajlo Pupin"
+; Date:  Unknown
+; Version:  1.0
+;
+; Reconstructed from partial source and decompiled binary
+; by Marko Solajic on 04. 04. 2024.
+;
+; Package Description:
+;
+;	This is the 'DUMMY' IOP with the PC keyboard ISR
+;   ISR must be set up by an external program. See PCKBD.Z80
+;
+; Notes on Assembly:
+;
+;	This package is to be assembled with Echelon ZAS
+;	(because of possible macros) and configured into
+;	PCKBD.IOP using the following method.
+;
+;	For ZAS: "ZAS PCKBDIOP ;ZLINK PCKBDIOP $RF000 ;REN PCKBD.IOP=PCKBDIOP.COM"
+;	(F000 is the address of the IOP)
+;
+	.hd64
+	MACLIB	Z3BASE		; Get the system addresses and equates.
+;
+ZAS	EQU	TRUE		; True if using relocating assembler/linker.
+				; False for MAC assembly.
+;
+	 IF ZAS
+IOPAK:				; Beginning of this package.
+ 	 ELSE
+IOPAK	EQU	IOP
+ 	 ENDIF
+;
+  	 IF NOT	ZAS
+	ORG	IOP
+ 	 ENDIF
+;
+START:	JP	STATUS		; Internal Status Routine
+	JP	SELECT		; Device Select Routine
+	JP	NAMER		; Device Name Routine
+	JP	TINIT		; Initialize Terminal. LDR jumps here
+				;  after loading this package.
+;
+; You must hard-code these jumps to the actual
+; BIOS addresses.
+;
+CONST:	JP	0D1F6H		; Console Input Status
+CONIN:	JP	0D1F9H		; Console Input Char
+CONOUT:	JP	0D206H		; Console Output Char
+LIST:	JP	0D22EH		; List Output Char
+PUNCH:	JP	0D24BH		; Punch Output Char
+READER:	JP	0D25DH		; Reader Input Char
+LISTST:	JP	0D215H		; List Output Status
+
+	JP	COPSCR		; Ccopy Screen Routine
+	JP	COPEN		; Open CON: Disk File
+	JP	CCLOSE		; Close CON: Disk File
+	JP	LOPEN		; Open LST: Disk File
+	JP	LCLOSE		; Close LST: Disk File
+;
+;  I/O Package Identification
+;
+	DB	'Z3IOP'		; Read by LDR for identification.
+;
+; The main body of the IO Package starts here.
+;  The preceding jumps and package ID MUST remain in their present positions.
+;
+	DB	'TIMIOP  '	; Name of this package (Always 8 bytes)
+;
+;	PC KEYBOARD INTERRUPT ROUTINE
+; 
+typbuf	equ	0e7abh
+buflen	equ	31
+;
+KBDISR:
+; You will need the location of this label for the enabler program
+	di
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	ld	a,(kbstat)	; Get status
+	ld	d,a
+	in0	a,(0ffh)	; Get kbd scan code
+	ld	(kbscan),a	; Save scan code
+	ld	c,a		
+	ld	e,80h		; Init kbd status bit-pointer
+	and	7fh		; Reset msb
+	cp	2ah		; left shift ?
+	jr	z,kbsmod	; Modify kbd status
+	srl	e		; Shift kbd status bit-pointer
+	cp	36h		; right shift ?
+	jr	z,kbsmod
+	srl	e
+	cp	1dh		; control ?
+	jr	z,kbsmod
+	srl	e
+	cp	38h		; alt ?
+	jr	z,kbsmod
+	srl	e
+	cp	45h		; numlock ?
+	jr	z,kbsmo1
+
+; Missing text added from disassembly.
+	srl	e
+	cp	3ah
+	jr	z,kbsmo1
+	bit	7,c
+	jr	nz,typex
+	ld	hl,kbscan
+	ld	b,3h
+	mlt	bc
+	add	hl,bc
+	ld	c,1h
+	bit	2h,d
+	jr	z,lab01
+	bit	2h,(hl)
+	jr	z,lab01
+	ld	c,2h
+
+lab01:
+	bit	3h,d
+	jr	z,lab02
+	bit	3h,(hl)
+	jr	z,lab02
+	ld	c,2h
+
+lab02:
+	ld	a,0c0h
+	and	d
+	jr	z,lab03
+	ld	a,3h
+	sub	c
+	ld	c,a
+
+lab03:
+	ld	(savhl),hl
+	ld	b,0
+	add	hl,bc
+	ld	a,(hl)
+	ld	hl,(savhl)
+	bit	5h,d
+	jr	z,lab04
+	bit	5h,(hl)
+	jr	z,lab04
+	and	09fh
+
+lab04:
+	bit	4h,d
+	jr	z,lab05
+	set	7h,a
+
+lab05:
+	ld	c,a
+	ld	hl,typbuf
+	ld	a,(hl)
+	inc	a
+	cp	buflen
+; End of missing text
+
+	jr	nc,typex	; Quit if so, otherwise..
+	ld	(hl),a		; Update character count
+	ld	e,a
+	ld	d,0		; Character count in DE
+	add	hl,de		; Point to character position
+	ld	(hl),c		; Stick it in
+typex:
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ei
+	ret
+
+kbsmod:
+	ld	a,d		; Get kbstat
+	or	e		; Set acording to bit-pointer
+	bit	7,c		; Taster released ?
+	jr	z,put1
+	jr	put0
+kbsmo1:
+	bit	7,c		; If taster pressed
+	jr	z,typex 	; then ignore it
+	bit	5,d		; If CTRL active
+	jr	nz,typex	; ignore Caps & Num Lock
+	ld	a,d		; Get kbstat
+put0:
+	xor	e		; Invert acording to bit-pointer
+put1:
+	ld	(kbstat),a	; Update status
+	jr	typex
+
+kbstat: db	0
+kbscan: db	0
+savhl:	dw	0
+
+kbtabl: db	0,1bh,1bh
+	db	0,'1!'
+	db	0,'2@'
+	db	0,'3#'
+	db	0,'4$'
+	db	0,'5%'
+	db	0,'6^'
+	db	0,'7&'
+	db	0,'8*'
+	db	0,'9('
+	db	0,'0)'
+	db	0,'-_'
+	db	0,'=+'
+	db	8,8,7fh
+	db	0,9,9
+	db	24h,'qQ'
+	db	24h,'wW'
+	db	24h,'eE'
+	db	24h,'rR'
+	db	24h,'tT'
+	db	24h,'yY'
+	db	24h,'uU'
+	db	24h,'iI'
+	db	24h,'oO'
+	db	24h,'pP'
+;rest of the table reconstructed from binary
+	db	0,'[{'
+	db	0,']}'
+	db	0,0dh,0dh
+	db	0,0,0
+	db	24h,'aA'
+	db	24h,'sS'
+	db	24h,'dD'
+	db	24h,'fF'
+	db	24h,'gG'
+	db	24h,'hH'
+	db	24h,'jJ'
+	db	24h,'kK'
+	db	24h,'lL'
+	db	0,';:'
+	db	0,27h,22h
+	db	0,60h,7eh
+	db	0,0,0
+	db	0,5ch,7ch
+	db	24h,'zZ'
+	db	24h,'xX'
+	db	24h,'cC'
+	db	24h,'vV'
+	db	24h,'bB'
+	db	24h,'nN'
+	db	24h,'mM'
+	db	0,',<'
+	db	0,'.>'
+	db	0,'/?'
+	db	0,0,0
+	db	0,'*/'
+	db	0,0,0
+	db	0,'  '
+	db	0,0,0
+	db	0,0d4h,0d4h
+	db	0,0d5h,0d5h
+	db	0,0d6h,0d6h
+	db	0,0d7h,0d7h
+	db	0,0d8h,0d8h
+	db	0,0d9h,0d9h
+	db	0,0dah,0dah
+	db	0,0dbh,0dbh
+	db	0,0dch,0dch
+	db	0,0ddh,0ddh
+	db	0,0,0
+	db	0,0deh,0deh
+	db	08h,18h,'7'
+	db	08h,05h,'8'
+	db	08h,12h,'9'
+	db	0,'--'
+	db	08h,13h,'4'
+	db	08h,07h,'5'
+	db	08h,04h,'6'
+	db	0,'++'
+	db	08h,26h,'1'
+	db	08h,18h,'2'
+	db	08h,03h,'3'
+	db	08h,16h,'0'
+	db	08h,7fh,'.'
+
+; This is the part of the missing text	
+STATUS:				; Internal Status Routine
+SELECT:				; Device Select Routine
+NAMER:				; Device Name Routine
+TINIT:				; Initialize Terminal
+COPSCR:				; Ccopy Screen Routine
+COPEN:				; Open CON: Disk File
+CCLOSE:				; Close CON: Disk File
+LOPEN:				; Open LST: Disk File
+LCLOSE:				; Close LST: Disk File
+;
+ZERO:	XOR	A		; Any call to this pak returns ZERO
+	RET
+;
+; ENDPAK must be the last label in the file in order for the follow
+;  size check to work properly.
+;
+ENDPAK:
+;
+	 IF	ENDPAK-START GT	200H
+ERROR	EQU	NOVALUE		; This package is too big!!
+	 ENDIF
+
+	END

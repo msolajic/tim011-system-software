@@ -1,0 +1,675 @@
+ 
+; TIM 011 BOOT ROM
+; based on
+;
+; SB180 Monitor
+; By Microfuture
+; Copyright (c) Micromint, 1985
+;
+; Name		BOOTROM.Z80
+; Version #	1.0
+; Revision	Alpha ( )  Beta ( )  Production (x)
+; Reconstructed from binary on April 16th, 2024
+; by Marko Solajic
+;
+; This is a highly modified SB180 Monitor ROM which is only able to
+; clear the screen on TIM 011, check memory and FDC, and boot from first floppy drive.
+;
+; Diagnostic is trough keyboard LEDs, if a memory error occurs keyboard will switch
+; from LINE to LOCAL and L1 will turn on. If there is a floppy drive error, LOCAL and
+; L2 will turn on. No other feedback is provided. Except for clearing the screen,
+; the ROM does not output anything on the screen, only feedback is with keyboard LEDs.
+;
+; Type		ZAS.COM, ZLINK.COM and PORTS.LIB required
+;
+	.HD64				; Use HD64180 mnemonics
+	.SALL				; Suppress macro expansion
+;
+; To make a ROM image type ZAS BOOTROM;ZLINK BOOTROM $R0
+; The resulting BOOTROM.COM file executes at address 0
+;
+RAM	EQU	0FF00H			; Physical address 4FF00h
+;
+	.XLIST
+	MACLIB	PORTS.LIB		; HD64180 on-chip ports
+	.LIST
+;
+;Program start - enter from RESET or bad opcode TRAP
+;
+START:
+	DI				; Disable all interrupts
+	IM	1			; Interrupt Mode 1
+	JR	RESET
+;
+;System start-up parameters
+;
+STARTBYTE:
+	DEFB	0F0H			; 0FFh=autosense,autoboot. Not used on TIM 011 but left in.
+CA0:	DEFB	64H			; CNTLA0 = 8 data, 1 stop, no parity, RTS0* low
+CA1:	DEFB	76H			; CNTLA1 =  "	    "	 , even partity, disable ext.clock
+CB0:	DEFB	0BH			; CNTLB0 = 1200 baud aux:
+CB1:	DEFB	2			; CNTLB1 = 9600 baud con:
+S0:	DEFB	0			; STAT0 = interrupts disabled
+S1:	DEFB	4			; STAT1 = interrupts disabled, CTS1* enabled
+DC:	DEFB	6CH			; 1 memory, 3 i/o wait states (ls 4 bits must be C)
+RC:	DEFB	82H			; 2 clock refresh every 40 clocks
+SPCF1:	DEFB	0AFH			; 9266 srt/hut (12ms step)
+SPCF2:	DEFB	2EH			; 9266 hlt/nd (nd must be 0)
+;
+RESET:
+;
+;set up interrupt table address
+;
+	LD	DE,INTTBL		; Point to interrupt table
+	LD	A,D			; Ms table address
+	LD	I,A
+	OUT0	(IL),E			; Ls table address
+;
+;delay for power up sequence
+;
+	LD	B,4
+STALL1:	LD	HL,0
+STALL2:	DEC	HL
+	LD	A,H
+	OR	L
+	JR	NZ,STALL2
+	DJNZ	STALL1
+;
+;clear screen
+;
+	LD	BC,08000H
+	LD	A,0
+CLRSCR0:
+	OUT	(C),A
+	INC	BC
+	BIT	7,B
+	JR	NZ,CLRSCR0
+	JR	CONT
+;fill up to RST7
+	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+;
+;RST7
+	JP INTERR
+;
+;initialize on-chip I/O devices
+;
+;ASCI channel 0 - auxillary port
+;ASCI channel 1 - console port
+;
+CONT:
+	LD	HL,CA0			; Initialize
+	LD	C,CNTLA0		; First six
+	LD	B,6			; Registers
+	OTIMR
+;
+;
+;CSI/O - TXS used for disk motor control
+;
+	LD	A,0
+	OUT0	(CNTR),A		; Interrupt mask
+;
+;PRT Timers
+;
+	LD	A,0			; Redundant - can be removed
+	OUT0	(TCR),A			; Disable timers
+;
+;Centronics port
+;
+	OUT0	(CENTDC),A		; Clear latch
+;
+;DMAC Channels - ch.0 available, ch.1 for FDC
+;
+	OUT0	(DSTAT),A		; Disable dma
+	LD	A,2
+	OUT0	(DMODE),A		; Ch.0 = memory <-> memory mode
+	LD	A,(HL)			; Ch.1 = i/o <-> memory
+	OUT0	(DCNTL),A		; 1 memory, 4 i/o wait states
+;
+;
+;DRAM refresh control
+;
+	INC	HL
+	LD	A,(HL)			; Enable dram refresh
+	OUT0	(RCR),A			; 2 clock refresh every 40 clock cycles
+;
+;Interrupt control
+;
+	LD	A,7
+	OUT0	(ITC),A			; Int0,1,2 enabled
+;
+;
+;MMU - initialize to point to first RAM bank
+;
+	LD	A,0F8H			; Initially assume 27256 ROM
+	OUT0	(CBAR),A		; Rom in common area 0
+	LD	A,40H			; Ram physically at 40000h
+	OUT0	(BBR),A			; Ram in bank area
+	OUT0	(CBR),A			; Ram in common area 1
+;
+	LD	HL,0FFFFH
+	LD	B,255
+RAMINIT:				; Null cycles to warm up RAMs
+	LD	A,(HL)
+	DEC	HL
+	DJNZ	RAMINIT
+;
+	LD	A,4			; Initial bank 0
+	LD	(DMABNK),A
+	OUT0	(FDCDT),A		; Clean up FDC
+	LD	A,0
+	LD	HL,CONFLG
+	LD	(HL),A			; Console is asci ch.1
+	INC	HL
+	LD	(HL),A			; Printer echo is off
+	INC	HL
+	LD	(HL),A			; Printer is centronics
+	LD	(PARAMC),A		; Drive 0 for auto boot
+	LD	(MOTOR),A		; Disk motor marked as off	
+	LD	A,0FFH
+	LD	(PRNSTAT),A		; Centronics not busy
+;
+;
+;Check RAM for stack
+	LD	HL,0FFFFH
+STEST:	LD	A,(HL)			; Read potential stack
+	LD	B,A			; Save it
+	CPL				; Complement
+	LD	(HL),A			; Write
+	LD	A,(HL)			; Reread
+	CPL				; Recomplement
+	LD	(HL),A			; Rewrite
+	CP	B			; Compare
+	JR	NZ,BADBITS		; Not =, report fail
+	DEC	L			; Else, dec count
+	LD	A,0
+	OR	L			; One page done ?
+	JR	NZ,STEST		; Yes, continue
+	JR	STACKOK			; No, keep checking
+;
+BADBITS:
+	LD	B,03BH			; Send command to keyboard: Switch from LINE to LOCAL, turn on L1
+BADBITS0:
+	LD	C,0			; But first send a 0x00
+;
+BADBITS1:
+	IN0	A,(STAT1)		; Wait for ASCI1 to be ready
+	AND	2
+	JR	Z,BADBITS1
+	OUT0	(TDR1),C		; Send 0x00
+	LD	C,B
+BADBITS2:
+	IN0	A,(STAT1)		; Wait for ASCI1 to be ready
+	AND	2
+	JR	Z,BADBITS2
+	OUT0	(TDR1),C		; Send LED status
+	HALT
+;
+;
+;
+STACKOK:				; Ram ok, continue
+;	LD	SP,0			; This is missing from TIM 011 rom. Should be here, just in case.
+;
+;Here should be a routine that detects size of ROM. Still assuming 27256 ROM, although 2764 installed.
+;
+	LD	A,0F2H
+	LD	(ROMSIZE),A		; Not used anywhere else?
+	LD	A,2
+	LD	(RAMSIZE),A		; Not used anywhere else?
+
+	LD	B,8			; If 9266 doesn't RESET
+FDCFIX:	IN0	A,(FDCDT)		; Try
+	CALL	FDCDLY			; To
+	IN0	A,(FDCSTS)		; Fix
+	CP	80H			; It
+	JR	Z,FDCSPEC		; If OK, continue
+	DJNZ	FDCFIX
+	JR	BADFDC			; Otherwise show FDC error
+;
+FDCDLY:	PUSH	BC
+	LD	B,255
+FDCDLY1:
+	DJNZ	FDCDLY1
+	POP	BC
+	RET
+;
+FDCSPEC:
+	CALL	FDCDLY			; Stall >12us
+	CALL	BSYCK			; Busy, seek check
+	LD	A,3			; Specify command
+	OUT0	(FDCDT),A
+	CALL	CBUSY			; Rqm, dio check
+	LD	A,(SPCF1)		; Srt, hut
+	OUT0	(FDCDT),A
+	CALL	CBUSY
+	LD	A,(SPCF2)		; Hlt, nd
+	OUT0	(FDCDT),A
+;
+	LD	A,0
+	LD	(DRIVE),A
+;
+FDBOOT:	
+	CALL	DRDY			; If disk drive is not ready
+	JR	Z,FDBOOT		; wait
+	JR	COLDS			; and then boot disk
+
+;
+BADFDC:	LD	B,037H			; Send command to keyboard: Switch from LINE to LOCAL, turn on L2
+	JP	BADBITS0		; Call LED routine
+;
+DELAY10MS:
+	IN0	A,(TCR)
+	AND	0FEH
+	OUT0	(TCR),A			; Stop timer
+	LD	A,0CH
+	OUT0	(TMDR0L),A
+	OUT0	(TMDR0H),A		; 0C0CH*20*163ns approx.=10ms
+	IN0	A,(TCR)
+	OR	1
+	OUT0	(TCR),A			; Restart timer
+D10LOOP:
+	IN0	A,(TCR)
+	BIT	6,A			; Timeout ?
+	JR	Z,D10LOOP		; No, keep waiting
+	IN0	A,(TMDR0L)		; Reset timer int flag
+	IN0	A,(TMDR0H)		; By reading data registers
+	DJNZ	DELAY10MS		; Yes, do it B times
+	RET
+;
+;BOOT Command
+;
+BCOM:
+COLDS:					; Enter at reset if drive ready
+	LD	A,(PARAMC)
+	CP	0
+	JR	Z,COLDS1
+	LD	A,(PARAM1)		; We can't rely on uninitialized RAM here, so change
+	AND	3
+COLDS1:
+	LD	(DRIVE),A		; Boot from drive 0
+	LD	A,0
+	LD	(TRACK),A		; Track 0
+	LD	(HEAD),A		; Head 0
+	CALL	CREADY			; Disk ready?
+	CALL	SEKRCL			; Seek and recalibrate
+	CALL	DISKTYPE
+	LD	A,11H			; Sector 1 native
+	LD	C,A
+	LD	A,(DTYPE)
+	CP	'H'			; Hitachi format ?
+	LD	A,C
+	JR	NZ,BOOTSEC		; No
+	LD	A,1			; Sector 1 Hitachi
+BOOTSEC:
+	LD	(SECTOR),A		; Sector 1
+	LD	A,0C6H
+	LD	(FDCOMMAND),A		; 9266 read command
+	LD	HL,8000H		; Boot loader address
+	LD	DE,400H
+	LD	A,4
+	LD	(DMABNK),A
+	CALL	FDDRIV			; Initiate 9266
+;
+IPL1:
+	LD	A,(FDBSY)		; Check if
+	BIT	6,A			; 9266 still loading
+	JR	NZ,IPL1			; Wait until load complete
+;
+	LD	A,40H			; Point to bank 1
+	OUT0	(BBR),A
+	LD	A,(DTYPE)		; Check disktype
+	LD	B,1
+	CP	'H'			; Hitachi
+	JR	Z,BOOTER
+	INC	B
+	CP	40			; 40 track
+	JR	Z,BOOTER
+	INC	B			; Else 80 track
+;
+BOOTER:	LD	A,B			; A=1/Hitachi,2/40 trk,3/80 trk
+	JP	8000H			; Jump to boot loader
+;
+SEKRCL:
+FSR1:
+	CALL	CALBRT			; Recalibrate
+FSAR1:
+	LD	A,(FDBSY)
+	BIT	6,A			; Busy flag check
+	JR	NZ,FSAR1
+	LD	A,(ST012)
+	BIT	6,A			; Result status check
+	JR	NZ,FSR1
+;
+	CALL	SEEK
+;
+FSAR2:
+	LD	A,(FDBSY)
+	BIT	6,A			; Busy flag check
+	JR	NZ,FSAR2
+	LD	A,(ST012)
+	BIT	6,A			; Result status check
+	JR	NZ,FSR1
+	RET
+;
+BSYCK:
+	IN0	A,(FDCSTS)
+	AND	10H			; Busy check
+	JR	NZ,BSYCK
+	IN0	A,(FDCSTS)
+	AND	0FH			; Seek check
+	JR	NZ,BSYCK
+	RET
+;
+CBUSY:
+	IN0	A,(FDCSTS)
+	BIT	7,A			; Rqm=1
+	JR	Z,CBUSY
+	BIT	6,A			; Dio=0
+	JR	NZ,CBUSY
+	RET
+;
+SBUSY:
+	IN0	A,(FDCSTS)
+	BIT	7,A			; Rqm=1
+	JR	Z,SBUSY
+	BIT	6,A			; Dio=1
+	JR	Z,SBUSY
+	RET
+;
+DRDY:
+	CALL	BSYCK
+	LD	A,4			; 9266 sense device status command
+	OUT0	(FDCDT),A
+	CALL	CBUSY
+	LD	A,(DRIVE)		; Set drive#
+	OUT0	(FDCDT),A
+	CALL	SBUSY
+	IN0	A,(FDCDT)		; Get status
+	AND	20H
+	RET
+;
+;
+DISKTYPE:
+	PUSH	AF
+	PUSH	BC
+	PUSH	HL
+	LD	A,4AH			; Read ID
+	LD	(FDCOM),A
+	LD	B,2
+	CALL	COMMD
+DTYPE1:	LD	A,(FDBSY)
+	BIT	6,A
+	JR	NZ,DTYPE1
+	LD	A,(LNGH0)
+	LD	HL,FDPRM
+	LD	(HL),A			; Set n/40&80
+	CP	2
+	LD	A,40			; Set DTYPE = 40 cylinders
+	LD	B,10			; Set eot/40
+	LD	C,14			; Set gpl/40
+	JR	Z,DTEXIT
+	LD	A,(HL)
+	CP	1
+	LD	A,'H'			; Set DTYPE = Hitachi
+	LD	B,16			; Set eot/Hitachi
+	LD	C,14			; Set gpl/Hitachi
+	JR	Z,DTEXIT
+	LD	A,80			; Set DTYPE = 80 cylinders
+	LD	B,5			; Set eot/80
+	LD	C,14			; Set gpl/80
+DTEXIT:	LD	(DTYPE),A		; DTYPE
+	INC	HL
+	LD	(HL),B			; Eot
+	INC	HL
+	LD	(HL),C			; Gpl
+	LD	A,0FFH
+	INC	HL
+	LD	(HL),A			; Dtl/40&80
+	POP	HL
+	POP	BC
+	POP	AF
+	RET
+;
+FDDRIV:
+	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LD	B,2
+	LD	A,(FDCOMMAND)
+	CP	0C6H
+	JR	Z,RDFUNC
+	LD	B,0
+RDFUNC:
+	LD	A,B
+	CALL	DMASET			; Dma parameter set
+	LD	A,(FDCOMMAND)		; 9266 read command
+	LD	(FDCOM),A
+	LD	B,9			; 9 byte command list
+	CALL	COMMD			; Issue command
+	LD	A,(FDBSY)		; Error flag check
+	BIT	5,A
+	JP	NZ,BADFDC
+	LD	A,(ST012)
+	BIT	6,A
+	JP	NZ,BADFDC
+;
+	POP	BC
+	POP	DE
+	POP	HL
+	RET
+;
+SEEK:
+	PUSH	AF
+	PUSH	BC
+	LD	A,0FH			; 9266 seek command
+	LD	(FDCOM),A
+	LD	B,3			; 3 byte command list
+	CALL	COMMD			; Issue command
+;
+	LD	A,(FDBSY)
+	BIT	5,A
+	JP	NZ,BADFDC
+	POP	BC
+	POP	AF
+	RET
+;
+CALBRT:
+	PUSH	AF
+	PUSH	BC
+	LD	A,7			; 9266 recalibrate command
+	LD	(FDCOM),A
+	LD	B,2
+	CALL	COMMD
+	LD	A,(FDBSY)
+	BIT	5,A
+	JP	NZ,BADFDC
+	POP	BC
+	POP	AF
+	RET
+;
+COMMD:
+	PUSH	HL
+COMMD1:	CALL	DRDY			; Device ready
+	JR	Z,COMMD1		; Wait for ready
+	CALL	BSYCK
+	DI
+	LD	A,(FDCOM)		; First command byte
+	OUT0	(FDCDT),A
+	LD	IX,FDBSY		; Mark FDC busy
+	RES	5,(IX)
+	SET	6,(IX)
+	EI
+	LD	IX,FDCOM
+COM1:
+	INC	IX			; Point to next command byte
+	DEC	B			; Count down
+	JR	Z,COM2			; Done
+	CALL	CBUSY			; No, wait for FDC
+	LD	A,(IX)			; Next command byte
+	OUT0	(FDCDT),A
+	JR	COM1			; More command bytes
+COM2:
+FDCINT:
+	LD	IX,FDBSY
+	BIT	6,(IX)			; Check FDC busy
+	JR	NZ,FDCINT		; Yes, wait
+	POP	HL			; Else,
+	RET				; Command done
+;
+;
+DMASET:					; Set DMA - HL=memaddr, DE=count
+	PUSH	BC
+	LD	B,A
+	IN0	A,(DCNTL)
+	AND	0FCH
+	OR	B
+	OUT0	(DCNTL),A
+	LD	A,B
+	POP	BC
+	OUT0	(MAR1L),L		; Mem addr low
+	OUT0	(MAR1H),H		; Mem addr high
+	LD	A,(DMABNK)
+	OUT0	(MAR1B),A		; Mem addr bank
+	LD	A,0A0H			; I/O addr = 9266 DACK
+	OUT0	(IAR1L),A
+	LD	A,0
+	OUT0	(IAR1H),A
+	OUT0	(BCR1L),E		; Count low
+	OUT0	(BCR1H),D		; Count high
+	LD	A,80H
+	OUT0	(DSTAT),A
+	RET
+;
+CREADY:
+	PUSH	AF
+	PUSH	BC
+	LD	A,(MOTOR)		; Check if motor on
+	CP	0FFH
+	JR	Z,CREADY1		; Yes, continue
+	LD	A,0FFH			; No, mark it on
+	LD	(MOTOR),A
+	OUT0	(TRDR),A		; And turn it on
+	LD	A,10H
+	OUT0	(CNTR),A
+	LD	B,180			; 1.8 seconds for spin-up
+	CALL	DELAY10MS
+;
+CREADY1:
+	POP	BC
+	POP	AF
+	CALL	DRDY			; Check disk ready
+	JR	Z,CREADY			; And keep trying
+	RET
+;
+HERE:	DS	32-[[HERE-START] AND 31] ; Force 32 byte boundary
+;
+;
+INTTBL:	DEFW	INTERR			; Centronics interrupt
+	DEFW	INTFDD			; Floppy Disk Controller interrupt
+	DEFW	INTERR			; Timer 0
+	DEFW	INTERR			; Timer 1
+	DEFW	INTERR			; DMAC 0
+	DEFW	INTERR			; DMAC 1
+	DEFW	INTERR			; CSI/O
+	DEFW	INTERR			; ASCI 0
+	DEFW	INTERR			; ASCI 1
+;
+INTERR:
+	EI
+	RET
+;
+INTFDD:
+	PUSH	HL
+	PUSH	BC
+	PUSH	AF
+	IN0	A,(FDCSTS)		; Check 9266 status
+	BIT	7,A
+	JR	Z,FDEND
+	BIT	4,A
+	JR	NZ,RWEND
+;
+	LD	A,8
+	OUT0	(FDCDT),A
+	CALL	SBUSY
+	IN0	A,(FDCDT)
+	LD	(ST012),A		; Status
+	CALL	SBUSY
+	IN0	A,(FDCDT)
+	LD	(TRAK0),A		; Track
+	LD	A,(ST012)
+	RLCA
+	JR	C,FDEND
+	AND	01000000B
+	JR	NZ,FDEN1
+RWEND:
+	LD	B,7
+	LD	C,FDCDT
+	LD	HL,ST012
+RWEN1:
+	CALL	SBUSY
+	INI				; 7 bytes
+	JR	NZ,RWEN1
+FDEN1:
+	LD	HL,FDBSY
+	RES	6,(HL)			; Mark disk free
+FDEND:
+	POP	AF
+	POP	BC
+	POP	HL
+	EI
+	RET
+;
+;
+	.LIST
+;
+;
+;A lot of these variables are not used in any way, but I have left them for posterity.
+;
+FDCOM	EQU	RAM			; 9266 command
+DRIVE	EQU	FDCOM+1			; Command Drive
+TRACK	EQU	FDCOM+2			; Command Track
+HEAD	EQU	FDCOM+3			; Command Head
+SECTOR	EQU	FDCOM+4			; Command Sector
+FDPRM	EQU	FDCOM+5			; Command parm
+LNGTH	EQU	FDCOM+9			; Command Sector length
+FDBSY	EQU	FDCOM+10		; Drive busy
+ST012	EQU	FDCOM+11		; Result ST0,ST1,ST2
+TRAK0	EQU	FDCOM+14		; Result Track
+HEAD0	EQU	FDCOM+15		; Result head
+SECT0	EQU	FDCOM+16		; Result sector
+LNGH0	EQU	FDCOM+17		; Result length
+DMACOM	EQU	FDCOM+18		; DMAC command
+;
+COMLINE	EQU	FDCOM+19		; Command line
+PARAMC	EQU	FDCOM+27		; # Parms
+PARAM1	EQU	FDCOM+28		; Parm 1
+PARAM2	EQU	FDCOM+30		; Parm 2
+PARAM3	EQU	FDCOM+32		; Parm 3
+PARAM4	EQU	FDCOM+34		; Parm 4
+OLDSEC	EQU	FDCOM+36		; Last sector
+OLDDMA	EQU	FDCOM+38		; Last DMA addr
+FDCOMMAND EQU	FDCOM+40		; FDC command history
+OLDST	EQU	FDCOM+41		; Last 'D' address
+DMABNK	EQU	FDCOM+43		; Current Bank
+CONFLG	EQU	FDCOM+44		; Console iobyte
+ECHOFLG	EQU	FDCOM+45		; Printer echo iobyte
+PRNFLG	EQU	FDCOM+46		; Printer iobyte
+PRNSTAT	EQU	FDCOM+47		; Printer status
+SAVESP	EQU	FDCOM+48		; Saved registers...
+SAVEHL	EQU	FDCOM+50
+SAVEPC	EQU	FDCOM+52
+BPADDR	EQU	FDCOM+54		; Breakpoint address
+BPINST	EQU	FDCOM+56		; Breakpoint instruction
+ROMSIZE	EQU	FDCOM+57		; ROM capacity
+RAMSIZE	EQU	FDCOM+58		; RAM capacity
+DTYPE	EQU	FDCOM+59		; Disk type
+TSTBYTE	EQU	FDCOM+60		; Memory test temp
+VSECTOR	EQU	FDCOM+61		; Virtual disk sector
+MOTOR	EQU	FDCOM+63		; Motor status
+;
+CONBUF	EQU	RAM+80H			; Console buffer
+;
+	END

@@ -1,0 +1,31 @@
+; Program Name:  PCKBD.COM
+; Author:  Institut "Mihajlo Pupin"
+; Date:  Unknown
+; Version:  1.0
+;
+; Reconstructed from decompiled binary
+; by Marko Solajic on 05. 04. 2024.
+;
+; Program Description:
+;
+;	This is the program which enables the PC keyboard ISR
+;   which has to be loaded beforehand with LDR PCKBD.IOP
+;
+; Notes on Assembly:
+;
+;	This program is to be assembled with Echelon ZAS
+;	and configured into PCKBD.COM using the following method:
+;
+;	ZAS PCKBD ;ZLINK PCKBD
+;
+
+kbdisr	equ	0f03dh ; You need to find this value in the PCKBD.IOP
+int0vec	equ 0d0ffh
+
+start:
+	di
+	im	2
+	ld	hl,kbdisr
+	ld	(int0vec),hl
+	ei
+	jp	0

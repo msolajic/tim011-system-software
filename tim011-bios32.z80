@@ -197,7 +197,8 @@ asci:	db	01100010b	; Cntla0 re, te, rts*, 7 bits, parity, 1 stop
 	db	00000100b	; Cntlb0 /10, /16, /16 (2400 baud)
 	db	00000010b	; Cntlb1 /10, /16, /4 (9600 baud)
 
-	db	00001000b	; Stat0 Receive Interrupt Enable (old value: 00000000b, Stat0 disable interrupts)
+	db	00000000b	; Stat0 disable interrupts
+				; Fixed on April 17th 2024.
 	 if	typahd
 	db	00001100b	; Stat1  enable cts1*, enable interrupt
 	 else
