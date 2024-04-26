@@ -75,3 +75,6 @@ Almost all keys which are not characters (punctuation, brackets, arrows etc) sen
 |numpad 9    |0xf9     |           |0x39                    |
 |BRK         |0xfa     |0x7a       |0x03 (CTL-C)            |
 |CTL-BRK     |0xfb     |0x7b       |0x03 (CTL-C)            |
+
+![TIM 011 keyboard](./images/tim011keyboard.jpg)
+
