@@ -656,7 +656,7 @@ gotim:
 	ld	hl,0e82bh
 	ld	de,0e815h
 	ld	bc,016h
-	ldir			;probably deletes some EMU data
+	ldir			;reinitialize function key table
 	ld	a,(cdisk)
 	and	0fh
 	ld	c,a
@@ -2313,9 +2313,9 @@ intasci1:
 	out0	(cntla1),a	; Reset EFR
 
 	ld	a,c
-	cp	0dfh		; Function keys?
+	cp	0dfh		; CTL-COPY?
 	jr	nz,nobreak
-	ld	(0efffh),a	; place for EMU buffer for function key processing
+	ld	(0efffh),a	; yes, put a flag to EMU
 
 	jr	typex		; Quit
 

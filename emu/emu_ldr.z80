@@ -1,0 +1,15 @@
+	.HD64
+	org 00100h
+	ld	hl,0e800h
+	ld	de,0e801h
+	ld	bc,00014h
+	ld	(hl),0c9h			;put RET on all possible calls to EMU
+	ldir
+	ld	hl,0200h
+	ld	de,0e800h
+	ld	bc,00800h			;copy payload
+	ldir
+	call	0e803h				;call initialization routine
+	jp	0
+	
+end

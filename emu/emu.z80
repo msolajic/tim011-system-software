@@ -1,0 +1,815 @@
+ 
+; TIM 011 TERMINAL EMULATOR
+;
+; Name		EMU.Z80
+; Version #	1.0
+; Revision	Alpha ( )  Beta ( )  Production (x)
+; Reconstructed from binary on April 26th, 2024
+; by Marko Solajic
+;
+; This disassembly has been possible by the use of MAME emulator with it's debugger and Ghidra.
+; This program forms the part of the TIM 011 BIOS, where functions of drawing the characters to screen memory,
+; processing keyboard input, cursor movement and blinking etc have been moved from the BIOS.
+; My comments leave much to desire, as this code is very convoluted.
+;
+; While decompiling, some unknown code from the BIOS has been "decyphered" and also further cross-dependencies found.
+; One routine from BIOS copies the F_KEYS_TABLE_BACKUP to F_KEYS_TABLE_MAIN on every warm start.
+; This is so other programs can write their own table to F_KEYS_TABLE_MAIN and redefine the function keys.
+; Only example found so far is the BASIC interpreter included on the system disk, which redefines all function keys.
+;
+; Also, the program depends on the location of type-ahead buffer in the BIOS, and you have to define this address.
+;
+; Characters are in a 6x10 matrix, externally redefinable by use of CIR.COM, LAT.COM or ASC.COM
+; These programs will try to find the location of character definitions by reading the address from CHARSET_LOCATION, 
+; but will blindly overwrite anything to the hardcoded location of TRANSLATION_TABLE so they can support national alphabets.
+;
+; So, in my opinion, modifications of this program are not recommended. You have been advised.
+;
+; Compiled code of EMU.Z80 has to be included in EMU_LOADER.Z80 output. I don't know how yet.
+; probably on a real machine, make both as com files, and load load the loader to 0100h and this to 0200h, then save as one com file.
+; I will update this as soon as possible.
+;
+; ZAS.COM, ZLINK.COM, CHAR_ASC.LIB and PORTS.LIB required
+;
+	.HD64					; Use HD64180 mnemonics
+	.SALL					; Suppress macro expansion
+	.XLIST
+	MACLIB	PORTS.LIB			; HD64180 on-chip ports
+	.LIST
+;
+; To make type ZAS EMU;ZLINK EMU $RE800
+;
+; If you are making changes to the BIOS, you have to change the location of the type-ahead buffer in the line below.
+;
+TYPBUF	EQU	0E7ABH
+BUFLEN	EQU	31
+SCROLL	EQU	0D0H
+;
+	ORG	0E800H
+START:	
+	JP	CONOUT
+	JP	INIT
+JMPBLINK:
+	JP	BLINK
+	JP	CONIN
+	JP	CONST
+
+CHARSET_LOCATION:
+	DEFW	CHARSET
+
+COLUMN_POSITION:
+	DEFB	00H
+
+ROW_POSITION:
+	DEFB	00H
+
+PIXEL_TABLE_SELECTOR:
+	DEFW	REGULAR_TABLE
+
+F_KEYS_TABLE_MAIN:
+;BIOS makes a copy of the F_KEYS_TABLE_BACKUP here after every program has finished
+;It is made so that, for example, BASIC can redefine the function keys to call it's own functions
+;and after finishing in BASIC, BIOS would rewrite the table with defaults again.
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+	DEFB	00H
+
+F_KEYS_TABLE_BACKUP:
+	DEFW	F1
+	DEFW	F2
+	DEFW	F3
+	DEFW	F4
+	DEFW	F5
+	DEFW	F6
+	DEFW	F7
+	DEFW	F8
+	DEFW	F9
+	DEFW	F10
+	DEFW	F11
+
+TRANSLATION_TABLE:
+	DEFB	041H,05H
+	DEFB	042H,018H
+	DEFB	043H,04H
+	DEFB	044H,013H
+	DEFB	050H,012H
+	DEFB	051H,03H
+	DEFB	052H,01H
+	DEFB	053H,06H
+	DEFB	04BH,05BH
+	DEFB	03BH,07BH
+	DEFB	04CH,05CH
+	DEFB	03CH,07CH
+	DEFB	04EH,05EH
+	DEFB	03EH,07EH
+	DEFB	03DH,05DH
+	DEFB	02DH,07DH
+	DEFB	040H,040H
+	DEFB	030H,060H
+	DEFB	07AH,03H
+	DEFB	07BH,03H
+TRANSLATION_ENTRIES	EQU	20
+
+CHARBUF_LOC:
+	DEFW	00H
+
+CHARBUF:
+	DEFB	00H
+
+SCROLL_LOCATION:
+	DEFB	00H
+
+BLINK_STATE:
+	DEFB	00H
+
+BLINK_TIMER:
+	DEFB	01H
+	DEFB	00H
+
+HIGLIGHT_TABLE:
+	DEFB	055H
+	DEFB	0D5H
+	DEFB	075H
+	DEFB	0F5H
+	DEFB	05DH
+	DEFB	0DDH
+	DEFB	07DH
+	DEFB	0FDH
+	DEFB	057H
+	DEFB	0D7H
+	DEFB	077H
+	DEFB	0F7H
+	DEFB	05FH
+	DEFB	0DFH
+	DEFB	07FH
+	DEFB	0FFH
+
+REGULAR_TABLE:
+	DEFB	000H
+	DEFB	0C0H
+	DEFB	030H
+	DEFB	0F0H
+	DEFB	00CH
+	DEFB	0CCH
+	DEFB	03CH
+	DEFB	0FCH
+	DEFB	003H
+	DEFB	0C3H
+	DEFB	033H
+	DEFB	0F3H
+	DEFB	00FH
+	DEFB	0CFH
+	DEFB	03FH
+	DEFB	0FFH
+
+ESC_NUM_PARAMS:
+	DEFB	00H
+
+ESC_FLAG:
+	DEFB	00H
+
+ESC_JUMP_LOW:
+	DEFB	00H
+
+ESC_JUMP_HIGH:
+	DEFB	00H
+
+ESC_PARAM_1:
+	DEFB	00H
+
+ESC_PARAM_2:
+	DEFB	00H
+	
+	DEFB	00H
+	DEFB	00H
+
+CONOUT:						;character to print is in C
+	LD	A,(ESC_NUM_PARAMS)		;if an escape code is being processed
+	OR	A				;check if escape code has parameters
+	JP	NZ,ESC_PROCESS_PARAMS		;yes, go process them
+	LD	A,(ESC_FLAG)			;processing an escape code?
+	INC	A
+	JP	Z,ESC_PROCESS_CODE		;if yes, process the escape code
+	LD	A,C
+	CP	27				;received an escape character?
+	JR	Z,ESC_SET_FLAG			;yes, go set the according flags
+	CP	7				;received a BELL signal?
+	JR	Z,RING_BELL			;yes, go ring a bell
+	PUSH	BC				;save character
+	CALL	CURSOR_OFF
+	POP	BC				;restore character
+	LD	A,C
+	CP	32				;is character a control code?
+	JR	C,IS_CONTROL_CHAR
+	BIT	7,A				;check if bit 7 is set (>127)
+	JP	Z,PRINT_CHAR   			;it's not, continue
+	LD	C,46				;if >127, print a dot
+	JP	PRINT_CHAR
+
+IS_CONTROL_CHAR:				;process the control character
+	CP	13				;CR?
+	JR	NZ,NOT_CR
+	XOR	A				;get a zero
+	LD	(COLUMN_POSITION),A		;set column to 0
+	JP	CURSOR_ON
+
+NOT_CR:
+	CP	10				;LF?
+	JR	NZ,NOT_LF
+	LD	A,(ROW_POSITION)		
+	INC	A				;increase row counter
+	CP	24				;last row?
+	JR	C,NOT_LAST_ROW
+	CALL	SCROLL_ONE_LINE
+	JP	CURSOR_ON
+
+NOT_LAST_ROW:
+	LD	(ROW_POSITION),A
+	JP	CURSOR_ON
+
+NOT_LF:	
+	CP	8				;backspace?
+	JR	NZ,UNK_CTRL_CHAR		;no more known control characters
+	LD	A,(COLUMN_POSITION)
+	DEC	A
+	JP	M,CURSOR_ON
+	LD	(COLUMN_POSITION),A
+	LD	C,32				;space
+	CALL	PRINT_CHAR			;erase character on previous postition
+	LD	A,(COLUMN_POSITION)
+	DEC	A
+	LD	(COLUMN_POSITION),A		;BUG - backspace routine does not move to previous row
+						;but deleting the characters furthermore removes them from buffer
+	JP	CURSOR_ON
+
+UNK_CTRL_CHAR:					;make an unknown control character printable
+	PUSH	BC
+	LD	C,05EH				;get a "^" character
+	CALL	PRINT_CHAR
+	POP	BC
+	SET	6,C				;add 64 to control code, to make it a uppercase char
+	CALL	PRINT_CHAR
+	JP	CURSOR_ON
+
+ESC_SET_FLAG:					;sets the flag so routine knows that an escape char has been received
+	LD	A,0FFH				;and the next character is the actual escape code
+	LD	(ESC_FLAG),A
+	RET
+
+RING_BELL:
+	IN0	A,(STAT1)
+	AND	2
+	JR	Z,RING_BELL			;wait for OK to send
+	XOR	A
+	OUT0	(TDR1),A			;send a zero
+
+RING_BELL_2:
+	IN0	A,(STAT1)
+	AND	2
+	JR	Z,RING_BELL_2			;wait for OK to send
+	LD	A,040H
+	OUT0	(TDR1),A			;send 040h - long beep
+	RET
+
+ESC_PROCESS_CODE:
+	LD	(ESC_FLAG),A			
+	LD	HL,ESC_CODE_TABLE		;address of the escape code jump table
+	LD	B,(HL)				;how many escape codes in the table
+	LD	A,C				;escape code character to A
+
+ESC_PROCESS_LOOP:	
+	INC	HL				;HL now points to escape code letter
+	CP	(HL)				;is it a known escape code
+	INC	HL				;HL now ponts to number of parameters
+	JR	Z,FOUND_WHICH_ESC		;yes, it is
+	INC	HL
+	INC	HL				;skip over the jump entry
+	DJNZ	ESC_PROCESS_LOOP		
+	PUSH	AF				;it's not an known escape code, so print it
+	CALL	CURSOR_OFF
+	LD	C,05EH				;get a "^" character
+	CALL	PRINT_CHAR
+	LD	C,05BH				;get a "[" character
+	CALL	PRINT_CHAR
+	POP	AF
+	LD	C,A				;print the actual character
+	CALL	PRINT_CHAR
+	JP	CURSOR_ON
+
+FOUND_WHICH_ESC:
+	LD	A,(HL)				;HL points to number of parameters
+	LD	B,A
+	INC	HL				;HL points to low byte of routine address
+	OR	A				;check if there are parameters
+	LD	A,(HL)				;get low jump address
+	INC	HL
+	LD	H,(HL)				;get high jump address
+	LD	L,A
+	JR	NZ,ESC_HAS_PARAMS		;if there are parameters, get them
+	JP	(HL)
+
+ESC_HAS_PARAMS:		 
+	LD	A,B
+	LD	(ESC_NUM_PARAMS),A		;save number of parameters
+	LD	(ESC_JUMP_LOW),HL		;save jump address
+	RET
+
+ESC_PROCESS_PARAMS:	
+	LD	HL,ESC_JUMP_HIGH
+	LD	D,0
+	LD	E,A
+	ADD	HL,DE
+	LD	(HL),C
+	DEC	A
+	LD	(ESC_NUM_PARAMS),A
+	RET	NZ
+	LD	HL,(ESC_JUMP_LOW)
+	JP	(HL)
+
+ESC_E_CLEAR_SCREEN:
+	XOR	A
+	LD	(BLINK_STATE),A
+	LD	BC,08000H
+CLS_LOOP:
+	OUT	(C),A
+	INC	BC
+	OUT	(C),A
+	INC	BC
+	OUT	(C),A
+	INC	BC
+	OUT	(C),A
+	INC	BC
+	BIT	7,B
+	JR	NZ,CLS_LOOP
+
+INIT:
+	XOR	A
+	LD	(ROW_POSITION),A
+	LD	(COLUMN_POSITION),A
+	LD	(SCROLL_LOCATION),A
+	OUT0	(SCROLL),A
+	RET
+
+ESC_Y_LOCATE_CURSOR:
+	CALL	CURSOR_OFF
+	LD	A,(ESC_PARAM_1)			;get first parameter
+	SUB	020H				;subtract 32
+	CP	050H				;is it more than 80?
+	JR	NC,SKIP1			;yes, don't save it
+	LD	(COLUMN_POSITION),A		;no, save it
+SKIP1:
+	LD	A,(ESC_PARAM_2)			;get second parameter
+	SUB	020H				;subtract 32
+	CP	018H				;is it more than 24?
+	JR	NC,SKIP2			;yes, don't save it
+	LD	(ROW_POSITION),A		;no, save it
+SKIP2:
+	JP	CURSOR_ON			
+	
+ESC_3_HIGHLIGHT:
+	LD	HL,HIGLIGHT_TABLE
+	LD	(PIXEL_TABLE_SELECTOR),HL
+	RET
+
+ESC_4_NORMAL:
+	LD	HL,REGULAR_TABLE
+	LD	(PIXEL_TABLE_SELECTOR),HL
+	RET
+
+ESC_C_CLEAR_FROM_CURSOR:			;clear line from cursor to end of line
+	CALL	CURSOR_OFF
+	CALL	GET_ADDRESS			;get address of current char in video ram
+	JR	NC,CLEAR_FULL_CHAR		;if it is even number of chars skip half char
+	PUSH	BC
+	LD	E,10				;10 pixel rows
+CLEAR_HALF_CHAR:
+	IN	A,(C)				;get pixel data
+	AND	0FH				;clear two pixels
+	OUT	(C),A				;write pixel data
+	INC	C
+	DEC	E
+	JR	NZ,CLEAR_HALF_CHAR
+	POP	BC
+	INC	B
+CLEAR_FULL_CHAR:
+	LD	E,5				;routine needs half the amount of pixels to clear		
+	CALL	CLEAR_LINES_IN_E
+	JP	CURSOR_ON			;redundant?
+
+CURSOR_ON:
+	LD	A,1
+	LD	(BLINK_STATE),A
+	LD	(BLINK_TIMER),A
+	RET
+
+PRINT_CHAR:
+	LD	A,C				;C is char to print
+	SUB	020H				;-32
+	LD	C,A
+	LD	B,10				;char is 10 pixels
+	MLT	BC				;char * 10 (pixela)
+	LD	HL,(CHARSET_LOCATION)
+	ADD	HL,BC				;BC is offset from start of font data
+	EX	DE,HL
+	CALL	GET_ADDRESS			;get RAM location in BC
+	LD	L,10
+	JR	C,PRINT_FROM_HALF		;if carry is set, char starts from half byte in screen RAM
+PRINT_FROM_FULL:
+	PUSH	HL
+	LD	A,(DE)				;DE is character address in charset
+	RLCA
+	RLCA
+	RLCA
+	RLCA
+	AND	0FH
+	LD	HL,(PIXEL_TABLE_SELECTOR)
+	ADD	A,L
+	LD	L,A
+	LD	A,(HL)
+	OUT	(C),A
+	INC	B
+	LD	A,(DE)
+	AND	0FH
+	LD	HL,(PIXEL_TABLE_SELECTOR)
+	ADD	A,L
+	LD	L,A
+	LD	A,(HL)
+	AND	0FH
+	LD	L,A
+	IN	A,(C)
+	AND	0F0H
+	OR	L
+	OUT	(C),A
+	DEC	B
+	INC	C
+	INC	DE
+	POP	HL
+	DEC	L
+	JR	NZ,PRINT_FROM_FULL
+	JR	PRINT_DONE
+PRINT_FROM_HALF:
+	PUSH	HL
+	LD	A,(DE)
+	RLCA
+	RLCA
+	AND	3
+	LD	HL,(PIXEL_TABLE_SELECTOR)
+	ADD	A,L
+	LD	L,A
+	LD	A,(HL)
+	AND	0F0H
+	LD	L,A
+	IN	A,(C)
+	AND	0FH
+	OR	L
+	OUT	(C),A
+	INC	B
+	LD	A,(DE)
+	RRCA
+	RRCA
+	AND	0FH
+	LD	HL,(PIXEL_TABLE_SELECTOR)
+	ADD	A,L
+	LD	L,A
+	LD	A,(HL)
+	OUT	(C),A
+	DEC	B
+	INC	C
+	INC	DE
+	POP	HL
+	DEC	L
+	JR	NZ,PRINT_FROM_HALF
+PRINT_DONE:
+	LD	A,(COLUMN_POSITION)
+	INC	A
+	CP	80				;end of row?
+	JR	NZ,NEXT_COL			;no
+	XOR	A				;yes, new column is zero
+NEXT_COL:
+	LD	(COLUMN_POSITION),A		;save new column position
+	JP	NZ,CURSOR_ON			;and finish if column is not zero
+	LD	A,(ROW_POSITION)		
+	CP	23				;last line?
+	JR	NZ,NEXT_ROW			;no
+	CALL	SCROLL_ONE_LINE			;yes
+	JP	CURSOR_ON			;and finish
+NEXT_ROW:
+	INC	A
+	LD	(ROW_POSITION),A		;save new row position
+	JP	CURSOR_ON			;and finish
+
+GET_ADDRESS:
+	LD	A,(ROW_POSITION)
+	LD	B,A
+	LD	C,10
+	MLT	BC				;row x10
+	LD	A,(SCROLL_LOCATION)
+	ADD	A,C
+	LD	C,A
+	LD	A,(COLUMN_POSITION)
+	LD	B,A
+	ADD	A,A
+	ADD	A,B				;col x3
+	ADD	A,2				;+2
+	SRL	A				;div /2
+	LD	B,A
+	SET	7,B				;plus high bit
+	RET					;if carry set, it is odd char in row
+
+INVERT_CURSOR:
+	LD	A,(BLINK_STATE)
+	BIT	1,A
+	SET	1,A
+	JR	Z,NEXT1
+	RES	1,A
+NEXT1:
+	LD	(BLINK_STATE),A
+
+INVERT_CHAR:
+	CALL	GET_ADDRESS
+	LD	L,10				;10 pixel lines
+	JR	C,INVERT_ODD			;if carry is set, character starts from half byte in screen RAM
+INVERT_EVEN:
+	IN	A,(C)
+	CPL					;invert
+	OUT	(C),A
+	INC	B
+	IN	A,(C)
+	LD	H,A
+	AND	0FCH
+	LD	D,A
+	LD	A,H
+	CPL
+	AND	3
+	OR	D
+	OUT	(C),A
+	DEC	B
+	INC	C
+	DEC	L
+	JR	NZ,INVERT_EVEN
+	RET
+INVERT_ODD:
+	IN	A,(C)
+	LD	H,A
+	AND	0FH
+	LD	D,A
+	LD	A,H
+	CPL
+	AND	0F0H
+	OR	D
+	OUT	(C),A
+	INC	B
+	IN	A,(C)
+	LD	H,A
+	AND	0C0H
+	LD	D,A
+	LD	A,H
+	CPL
+	AND	03FH
+	OR	D
+	OUT	(C),A
+	DEC	B
+	INC	C
+	DEC	L
+	JR	NZ,INVERT_ODD
+	RET
+
+CURSOR_OFF:
+	LD	HL,BLINK_STATE
+	RES	0,(HL)
+	BIT	1,(HL)
+	RET	Z
+	RES	1,(HL)
+	JP	INVERT_CHAR
+
+BLINK:
+	LD	A,(BLINK_TIMER)
+	DEC	A
+	JR	NZ,BLINKNOTTIME
+	LD	A,5
+BLINKNOTTIME:
+	LD	(BLINK_TIMER),A	
+	RET	NZ
+	LD	A,(BLINK_STATE)
+	RRA
+	RET	NC				;not time to blink yet
+	JP	INVERT_CURSOR
+
+SCROLL_ONE_LINE:
+	LD	A,(SCROLL_LOCATION)
+	ADD	A,10
+	LD	(SCROLL_LOCATION),A
+	OUT0	(SCROLL),A
+	ADD	A,0E6H
+	LD	C,A
+	LD	B,080H
+	LD	E,0DH
+
+CLEAR_LINES_IN_E:
+	XOR	A
+CLRL1:	
+	LD	D,E
+	PUSH	BC
+CLRL2:	
+	OUT	(C),A
+	INC	C
+	OUT	(C),A
+	INC	C
+	DEC	D
+	JR	NZ,CLRL2
+	POP	BC
+	INC	B
+	JR	NZ,CLRL1
+	RET
+
+;this routine was originally in BIOS
+;SB180 routine is very similar, without checking for copy character
+;const:
+;	ld	a,(typbuf)		; Character count in type-ahead buffer
+;	or	a
+;	ret	z			; No character available
+;	or	255			; Yes, character ready
+;	ret
+
+CONST:
+	CALL	CHECK_COPY
+	LD	A,(TYPBUF)			;get a character from buffer
+	LD	B,A
+	LD	A,(CHARBUF)			;save it here
+	OR	B
+	RET	Z
+	OR	0FFH
+	RET
+CHECK_COPY:
+	LD	A,(COPY_FLAG)			;check if screen copy to printer
+	CP	0DFH
+	RET	NZ				;no, return
+	CALL	CURSOR_OFF			;yes
+	LD	A,0C9H
+	LD	(JMPBLINK),A			;put RET to the blinking routine
+	CALL	0F021H				;print the screen. This routine is in tim.iop but not in pckbd.iop
+	LD	A,0C3H				;after printing, put JMP back
+	LD	(JMPBLINK),A			;to the BLINK routine
+	LD	(COPY_FLAG),A			;and "clear" the flag (anything but 0DFH)
+	RET
+
+;this routine was originally in BIOS
+;conin:
+;	call	const
+;	jr	z,conin			; Wait for character
+;	jp	getbuf			; Get character from buffer
+;getbuf:
+;	push	hl
+;	push	bc			; Save the registers
+;	ld	hl,typbuf+buflen-1 	; Point to end of buffer
+;	ld	bc,[buflen-1]*256 	; Length in B, 0 in C
+;
+; 'POP' a character from the buffer
+;gbloop:
+;	ld	a,(hl)
+;	ld	(hl),c
+;	ld	c,a
+;	dec	hl
+;	djnz	gbloop
+;	dec	(hl)			; Character count -1
+;	or	a			; Clear zero flag (sak)
+;	pop	bc
+;	pop	hl			; Restore the registers
+;	ret
+
+CONIN:
+	LD	A,(CHARBUF)
+	OR	A
+	JR	Z,CONIN2
+	DEC	A
+	LD	(CHARBUF),A
+	LD	HL,(CHARBUF_LOC)
+	LD	A,(HL)
+	INC	HL
+	LD	(CHARBUF_LOC),HL
+	RET
+		
+CONIN2:
+	CALL	CHECK_COPY
+	LD	A,(TYPBUF)
+	OR	A
+	JR	Z,CONIN2
+	CALL	GETBUF
+	BIT	7,A
+	RET	Z
+	RES	7,A
+	CP	04DH				;is it numpad enter? (0CDh - 080h = 04Dh)
+	JR	Z,NUMPAD_ENTER		
+	CP	06CH
+	JR	C,TRANSLATE_CHAR		;less than 0ECh
+	CP	07AH
+	JR	NC,TRANSLATE_CHAR
+NUMPAD_ENTER:
+	SUB	040H				;is numpad enter, make it a 0Dh
+	RET
+TRANSLATION_FOUND:
+	LD	A,(HL)
+	RET
+TRANSLATE_CHAR:
+	LD	HL,TRANSLATION_TABLE
+	LD	B,TRANSLATION_ENTRIES
+TRANSLATION_LOOP:
+	CP	(HL)
+	INC	HL
+	JR	Z,TRANSLATION_FOUND
+	INC	HL
+	DJNZ	TRANSLATION_LOOP
+	CP	054H				;is it between 0D4h
+	RET	C
+	CP	05FH				;and 0DFh (F-keys)?
+	RET	NC				;not an F-KEY
+	SUB	054H				;it is a F-KEY
+	ADD	A,A
+	LD	HL,F_KEYS_TABLE_MAIN
+	ADD	A,L
+	LD	L,A
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	LD	A,(HL)
+	OR	A
+	JR	Z,CONIN2
+	DEC	A
+	LD	(CHARBUF),A
+	INC	HL
+	LD	A,(HL)
+	INC	HL
+	LD	(CHARBUF_LOC),HL
+	RET
+GETBUF:
+	PUSH	HL
+	PUSH	BC
+	LD	HL,TYPBUF+BUFLEN
+	LD	BC,[BUFLEN]*256
+GBLOOP:
+	LD	A,(HL)
+	LD	(HL),C
+	LD	C,A
+	DEC	HL
+	DJNZ	GBLOOP
+	DEC	(HL)
+	OR	A
+	POP	BC
+	POP	HL
+	RET
+	
+CHARSET:
+	MACLIB	CHAR_ASC.LIB			;include character set
+	
+ESC_CODE_TABLE:
+	DEFB	5				;There are 5 ESC codes in total
+	DEFB	'Y',2				;Letter of ESC code and number of parameters it needs
+	DEFW	ESC_Y_LOCATE_CURSOR		;Routine address
+	DEFB	'E',0
+	DEFW	ESC_E_CLEAR_SCREEN
+	DEFB	'4',0
+	DEFW	ESC_4_NORMAL
+	DEFB	'3',0
+	DEFW	ESC_3_HIGHLIGHT
+	DEFB	'C',0
+	DEFW	ESC_C_CLEAR_FROM_CURSOR
+	
+;FUNCTION KEYS
+F1:	DEFB	4,'DIR '			;Number of letters including space, text to be written
+F2:	DEFB	5,'TYPE '
+F3:	DEFB	5,'LIST '
+F4:	DEFB	5,'SAVE '
+F5:	DEFB	5,'POKE '
+F6:	DEFB	5,'ECHO '
+F7:	DEFB	5,'JUMP '
+F8:	DEFB	4,'REG '
+F9:	DEFB	4,'ERA '
+F10:	DEFB	4,'REN '
+F11:	DEFB	3,018H,01AH,0DH			;cancel, substitute, CR
+
+FILL2K:	DS	2047-[FILL2K-START]		;2048, but we need one byte at the end...
+	
+COPY_FLAG:
+	DEFB	00H
+	
+END
