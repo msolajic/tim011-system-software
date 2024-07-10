@@ -1,0 +1,134 @@
+; LIBRARY:  SYSENV.LIB
+; AUTHOR:  RICHARD CONN
+; VERSION:  1.0
+; DATE:  22 FEB 84
+; PREVIOUS VERSIONS:  NONE
+
+;
+;	SYSENV IS THE DEFINITION FOR THE ZCPR3 ENVIRONMENT.
+;
+SYSENV	MACRO
+
+;  ENVIRONMENT DESCRIPTOR
+;	IF INLINE, THERE IS A LEADING JMP JUST BEFORE THIS
+;
+ENVORG1:
+	DB	'Z3ENV'		; Environment id
+	DB	2		; Class 2 environment (internal)
+
+	DW	EXPATH		; External path address
+	DB	EXPATHS		; Number of 2-byte elements in path
+
+	DW	RCP		; Rcp address
+	DB	RCPS		; Number of 128-byte blocks in rcp
+
+	DW	IOP		; Iop address
+	DB	IOPS		; Number of 128-byte blocks in iop
+
+	DW	FCP		; Fcp address
+	DB	FCPS		; Number of 128-byte blocks in fcp
+
+	DW	Z3NDIR		; Ndr address
+	DB	Z3NDIRS		; Number of 18-byte entries in ndr
+
+	DW	Z3CL		; Zcpr3 command line
+	DB	Z3CLS		; Number of bytes in command line
+
+	DW	Z3ENV		; Zcpr3 environment descriptor
+	DB	Z3ENVS		; Number of 128-byte blocks in descriptor
+
+	DW	SHSTK		; Shell stack address
+	DB	SHSTKS		; Number of shsize-byte entires in shell stack
+	DB	SHSIZE		; Size of a shell stack entry
+
+	DW	Z3MSG		; Zcpr3 message buffer
+
+	DW	EXTFCB		; Zcpr3 external fcb
+
+	DW	EXTSTK		; Zcpr3 external stack
+
+	DB	0		; Quiet flag (1=quiet, 0=not quiet)
+
+	DW	Z3WHL		; Address of wheel byte
+
+	DB	6		; Processor speed in mhz
+
+	DB	'P'-'@'		; Maximum disk
+	DB	15		; Maximum user
+	DB	1		; 1=ok to accept du, 0=not ok
+
+	DB	0		; Crt selection (0=crt 0, 1=crt 1)
+	DB	0		; Printer selection (n=printer n)
+
+	DB	80		; Width of crt 0
+	DB	24		; Number of lines on crt 0
+	DB	22		; Number of lines of text on crt 0
+
+	DB	132		; Width of crt 1
+	DB	24		; Number of lines on crt 1
+	DB	22		; Number of lines of text on crt 1
+
+	DB	80		; Width of printer 0
+	DB	66		; Number of lines on printer 0
+	DB	58		; Number of lines of text on printer 0
+	DB	1		; Form feed flag (0=can't formfeed, 1=can)
+
+	DB	96		; Width of printer 1
+	DB	66		; Number of lines on printer 1
+	DB	58		; Number of lines of text on printer 1
+	DB	1		; Form feed flag (0=can't formfeed, 1=can)
+
+	DB	132		; Width of printer 2
+	DB	66		; Number of lines on printer 2
+	DB	58		; Number of lines of text on printer 2
+	DB	1		; Form feed flag (0=can't formfeed, 1=can)
+
+	DB	136		; Width of printer 3
+	DB	66		; Number of lines on printer 3
+	DB	58		; Number of lines of text on printer 3
+	DB	1		; Form feed flag (0=can't formfeed, 1=can)
+
+	DB	'SH      '	; Shell variable filename
+	DB	'VAR'		; Shell variable filetype
+
+	DB	'        '	; Filename 1
+	DB	'   '		; Filetype 1
+
+	DB	'        '	; Filename 2
+	DB	'   '		; Filetype 2
+
+	DB	'        '	; Filename 3
+	DB	'   '		; Filetype 3
+
+	DB	'        '	; Filename 4
+	DB	'   '		; Filetype 4
+
+	DS	128-[$-ENVORG1+3] ; Make exactly 128 bytes long
+				; (+3 compensates for leading jmp)
+;
+; TERMINAL CAPABILITIES DATA (TCAP)
+;
+ENVORG2:
+	DB	'                ' ; Name of terminal (none)
+	DB	'E'-'@'		; Cursor up
+	DB	'X'-'@'		; Cursor down
+	DB	'D'-'@'		; Cursor right
+	DB	'S'-'@'		; Cursor left
+	DB	00		; Cl delay
+	DB	00		; Cm delay
+	DB	00		; Ce delay
+	DB	0		; Cl string
+	DB	0		; Cm string
+	DB	0		; Ce string
+	DB	0		; So string
+	DB	0		; Se string
+	DB	0		; Ti string
+	DB	0		; Te string
+
+	DS	32-[$-ENVORG2]	; Make exactly 32 bytes long
+
+	ENDM
+;
+;  END OF ENVIRONMENT DESCRIPTOR
+;
+

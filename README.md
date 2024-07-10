@@ -4,6 +4,9 @@ System software for TIM011, a school computer from the end of 1980's made in for
 BIOS is based on BIOS 3.2 for Micromint SB180.
 Boot ROM is based on Monitor 1.0 for MicroMint SB180.
 
+### Update 10th July 2024.
+Added support to BIOS for CompactFlash card instead of SCSI hard disk.
+
 ### Update 26. April 2024.
 Added the assembly listing of main payload of EMU terminal emulator, accompanying loader, and character set.
 

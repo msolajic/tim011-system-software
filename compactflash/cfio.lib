@@ -1,0 +1,38 @@
+
+; I/O Library for the CF card on 8-bit bus
+
+
+; Read / Write registers
+cf_data		equ	cfr
+
+; Read registers
+cf_error	equ	cfr+1
+cf_status	equ	cfr+7
+
+; Write registers
+cf_features	equ	cfr+1
+cf_seccount	equ	cfr+2
+cf_sector	equ	cfr+3
+cf_lba0		equ	cfr+3
+cf_cyl_low	equ	cfr+4
+cf_lba1		equ	cfr+4
+cf_cyl_hi	equ	cfr+5
+cf_lba2		equ	cfr+5
+cf_head		equ	cfr+6
+cf_lba3		equ	cfr+6
+cf_command	equ	cfr+7
+
+;CF Features
+cf_8bit		equ	1
+cf_nocache	equ	082h
+
+;CF Commands
+cf_reset	equ	004h
+cf_read_sec	equ	020h
+cf_write_sec	equ	030h
+cf_master	equ	0e0h
+cf_set_feat	equ 	0efh
+cf_get_info	equ	0ech
+
+; End of CFIO.LIB
+
