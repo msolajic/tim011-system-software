@@ -5,7 +5,7 @@ BIOS is based on BIOS 3.2 for Micromint SB180.
 Boot ROM is based on Monitor 1.0 for MicroMint SB180.
 
 ### Update 10th July 2024.
-Added support to BIOS for CompactFlash card instead of SCSI hard disk.
+Added support to BIOS for CompactFlash card instead of SCSI hard disk. Routines from Grant Searle.
 
 ### Update 26. April 2024.
 Added the assembly listing of main payload of EMU terminal emulator, accompanying loader, and character set.
